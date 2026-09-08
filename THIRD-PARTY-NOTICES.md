@@ -95,8 +95,15 @@ themselves and the license text is preserved. Full text:
 
 ## License texts
 
-The full text of the **Apache License, Version 2.0** is reproduced in
-[LICENSE](LICENSE).
+[LICENSE](LICENSE) carries the full text of the **GNU Affero General Public
+License v3.0**, which is this project's own licence from v1.0.0 onward. It has
+never contained the Apache 2.0 text, and said so here for several releases: up
+to v0.9.9 the project itself was Apache-2.0, and when the relicence landed this
+line was not updated with the file it points at.
+
+Several dependencies above are Apache-2.0. Their licence texts are not
+reproduced here; each is available at the project URL listed in the table, and
+the canonical text at <https://www.apache.org/licenses/LICENSE-2.0>.
 
 The full text of the **MIT License** is short enough to reproduce here:
 

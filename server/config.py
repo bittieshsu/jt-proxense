@@ -7,6 +7,8 @@ import glob
 import logging
 import os
 import shutil
+import stat
+import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional
@@ -17,6 +19,31 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
 CONFIG_BACKUP_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config_backups")
 MAX_BACKUPS = 10
+
+# config.yaml holds PVE API tokens (and, on legacy installs, PVE passwords), so
+# it must never be group- or world-readable. Historically the mode was whatever
+# the umask of whoever created it happened to be: install.sh writes it with a
+# plain `cat >`, so a root umask of 022 produced 0644 -- verified in the wild.
+SECRET_FILE_MODE = 0o600
+
+
+def _ensure_secure_mode(path: str) -> None:
+    """Force 0600 on a file that holds secrets. Best-effort and never fatal:
+    on a read-only mount, or a file owned by another user, we would rather run
+    and log than refuse to start -- but we say so loudly, because the operator
+    is the only one who can fix it."""
+    try:
+        current = stat.S_IMODE(os.stat(path).st_mode)
+        if current != SECRET_FILE_MODE:
+            os.chmod(path, SECRET_FILE_MODE)
+            logger.warning(
+                "tightened %s from %o to %o (it holds PVE API tokens)",
+                path, current, SECRET_FILE_MODE)
+    except OSError as e:
+        logger.error(
+            "could not secure %s (%s) -- it may hold PVE API tokens readable "
+            "by other users on this host; fix with: chmod 600 %s",
+            path, e, path)
 
 
 @dataclass
@@ -68,6 +95,12 @@ class ServerConfig:
     # POST host metrics to /api/v2/write — see server/influx_receiver.py.
     influx_enabled: bool = False
     influx_port: int = 8086
+    # Origins allowed to make credentialed cross-origin calls. Empty (the
+    # default) means none: the SPA is served from this same process, so it
+    # needs no grant. Only set this when the UI is hosted elsewhere, and name
+    # the origins explicitly -- "*" is ignored, because a wildcard combined
+    # with credentials lets any site the operator visits drive this API.
+    cors_origins: list = field(default_factory=list)
     # Optional bearer token. Telegraf sends `Authorization: Token <t>`.
     # Empty = no auth (LAN-trust mode); the receiver should be bound to a
     # private interface in that case.
@@ -211,6 +244,10 @@ class Config:
             cluster = ClusterConfig(
                 id=c.get("id", ""),
                 name=c.get("name", ""),
+                # Without this the field round-trips to "pve" no matter what
+                # the file says, so `type: esxi` could never select the ESXi
+                # adapter and re-saving the config silently rewrote it.
+                type=str(c.get("type", "pve") or "pve").lower(),
                 nodes=nodes,
                 auth=auth,
                 enabled=c.get("enabled", True),
@@ -245,19 +282,41 @@ def get_config() -> Config:
     return _current_config
 
 
+class ConfigError(RuntimeError):
+    """The config file exists but could not be understood. Never swallowed:
+    see load_config() for why."""
+
+
 def load_config() -> Config:
-    """Load configuration from file"""
+    """Load configuration from file.
+
+    FAIL-CLOSED. A config file that exists but cannot be parsed raises rather
+    than falling back to Config(), because those defaults are
+    `auth.enabled=False` + `host=0.0.0.0` -- so a truncated or hand-edited YAML
+    used to turn an authenticated instance into an open one on the next
+    restart, silently, with only a line in the journal. A missing file is a
+    different thing entirely (first install) and still yields defaults.
+    """
     global _current_config
 
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"top level must be a mapping, got {type(data).__name__}")
             _current_config = Config.from_dict(data)
             logger.info(f"Configuration loaded from {CONFIG_FILE}")
         except Exception as e:
-            logger.error(f"Failed to load config: {e}")
-            _current_config = Config()
+            logger.error(
+                "REFUSING TO START: %s could not be parsed (%s). The previous "
+                "settings -- including whether authentication is on -- cannot "
+                "be recovered from a broken file, and starting with defaults "
+                "would disable auth and bind 0.0.0.0. Restore a copy from %s, "
+                "or move the file aside to start fresh.",
+                CONFIG_FILE, e, CONFIG_BACKUP_DIR)
+            raise ConfigError(f"{CONFIG_FILE}: {e}") from e
     else:
         logger.info("No config file found, using defaults")
         _current_config = Config()
@@ -277,6 +336,9 @@ def backup_config():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_file = os.path.join(CONFIG_BACKUP_DIR, f"config_{timestamp}.yaml")
     shutil.copy2(CONFIG_FILE, backup_file)
+    # copy2 preserves the SOURCE mode, so a 0644 config.yaml used to spray
+    # world-readable copies of the same tokens into config_backups/.
+    _ensure_secure_mode(backup_file)
     logger.info(f"Config backup created: {backup_file}")
 
     # Remove old backups if exceeding MAX_BACKUPS
@@ -288,21 +350,68 @@ def backup_config():
 
 
 def save_config(config: Config) -> Config:
-    """Save configuration to file"""
+    """Save configuration to file, atomically, at mode 0600.
+
+    Three things this must not do, all of which it used to:
+
+      - Truncate the live file. `open(path, "w")` empties it before the first
+        byte is written, so a crash mid-dump left a half-written config -- and
+        load_config() now refuses to start on one of those.
+      - Leave the mode to chance. This file holds PVE API tokens; whether it
+        landed 0600 or 0644 depended on the umask of whoever wrote it last.
+      - Report success it did not achieve. The old body caught every exception,
+        logged it, and returned the config anyway, so `POST /api/config` told
+        the operator their change was saved when the disk write had failed.
+    """
     global _current_config
 
+    # Create backup before saving. A failure here must not be fatal -- the
+    # backup is a convenience, the write is the job -- but it IS logged.
     try:
-        # Create backup before saving
         backup_config()
-
-        data = config.to_dict()
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        _current_config = config
-        logger.info(f"Configuration saved to {CONFIG_FILE}")
     except Exception as e:
-        logger.error(f"Failed to save config: {e}")
+        logger.warning(f"config backup failed (continuing with save): {e}")
 
+    data = config.to_dict()
+    directory = os.path.dirname(CONFIG_FILE) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".config.yaml.", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False,
+                      allow_unicode=True, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        # Read it back before it replaces anything: a dump that cannot be
+        # parsed is exactly what load_config() will refuse to start on.
+        with open(tmp, "r", encoding="utf-8") as f:
+            if not isinstance(yaml.safe_load(f), dict):
+                raise ValueError("serialised config did not read back as a mapping")
+        os.replace(tmp, CONFIG_FILE)
+        tmp = None
+    except Exception:
+        logger.exception(f"Failed to save config to {CONFIG_FILE}")
+        raise
+    finally:
+        if tmp is not None and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    # fsync the directory so the rename itself survives a power loss.
+    try:
+        dfd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError as e:            # not fatal; the data is already in place
+        logger.debug(f"directory fsync skipped: {e}")
+
+    _ensure_secure_mode(CONFIG_FILE)
+    _current_config = config
+    logger.info(f"Configuration saved to {CONFIG_FILE}")
     return config
 
 

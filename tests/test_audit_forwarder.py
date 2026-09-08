@@ -210,15 +210,23 @@ async def test_tcp_delivers_gelf_null_terminated():
     async def handle(reader, writer):
         # Read until we see two NUL terminators
         buf = b""
-        while not payloads_in.is_set():
-            chunk = await reader.read(4096)
-            if not chunk:
-                break
-            buf += chunk
-            if buf.count(b"\x00") >= 2:
-                received.extend([p for p in buf.split(b"\x00") if p])
-                payloads_in.set()
-                break
+        try:
+            while not payloads_in.is_set():
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if buf.count(b"\x00") >= 2:
+                    received.extend([p for p in buf.split(b"\x00") if p])
+                    payloads_in.set()
+                    break
+        finally:
+            # Python 3.12's Server.wait_closed() waits for every handler's
+            # connection to actually close (3.11 returned immediately). A
+            # handler that returns without closing its writer leaves the
+            # server-side transport open, so the wait_closed() below never
+            # returns and the whole suite hangs here forever.
+            writer.close()
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -257,15 +265,23 @@ async def test_tcp_delivers_syslog_newline_framed():
 
     async def handle(reader, writer):
         buf = b""
-        while not payloads_in.is_set():
-            chunk = await reader.read(4096)
-            if not chunk:
-                break
-            buf += chunk
-            if buf.count(b"\n") >= 1:
-                received.extend([p for p in buf.split(b"\n") if p])
-                payloads_in.set()
-                break
+        try:
+            while not payloads_in.is_set():
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if buf.count(b"\n") >= 1:
+                    received.extend([p for p in buf.split(b"\n") if p])
+                    payloads_in.set()
+                    break
+        finally:
+            # Python 3.12's Server.wait_closed() waits for every handler's
+            # connection to actually close (3.11 returned immediately). A
+            # handler that returns without closing its writer leaves the
+            # server-side transport open, so the wait_closed() below never
+            # returns and the whole suite hangs here forever.
+            writer.close()
 
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]

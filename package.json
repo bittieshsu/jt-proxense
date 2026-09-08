@@ -1,13 +1,13 @@
 {
   "name": "jt-proxense",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Proxmox VE Monitoring System with Sci-Fi UI",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && mkdir -p dist/assets/xterm && cp node_modules/xterm/lib/xterm.js node_modules/xterm/css/xterm.css node_modules/xterm-addon-fit/lib/xterm-addon-fit.js dist/assets/xterm/",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "rebuild": "bash scripts/rebuild.sh",
     "restart-all": "bash scripts/restart-all.sh"
   },

@@ -76,6 +76,7 @@ from .middleware import (
     make_auth_middleware, role_required,
 )
 from . import audit
+from . import auth as auth_mod
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,46 @@ _last_broadcast_message = ""
 
 # Static files directory
 DIST_DIR = Path(__file__).parent.parent / "dist"
+
+
+def _visible_cluster_ids(user):
+    """Which clusters this session may see. None means "all".
+
+    Grants are `(user, cluster_id|*) -> role`, so a `*` grant of any rank means
+    every cluster; otherwise the visible set is exactly the clusters the user
+    holds a row for. None is also returned when auth is disabled, matching the
+    rest of the codebase's backward-compat policy.
+    """
+    if user is None:
+        return None
+    if user.get("role_global"):
+        return None
+    known = set(getattr(cluster_manager, "clusters", {}) or {})
+    known |= set(getattr(cluster_manager, "adapters", {}) or {})
+    try:
+        return frozenset(cid for cid in known
+                         if auth_mod.role_for(user["id"], cid))
+    except Exception:
+        logger.exception("could not resolve visible clusters; denying all")
+        return frozenset()
+
+
+def _scope_snapshot(data: dict, scope) -> dict:
+    """Drop clusters this session may not see.
+
+    The WebSocket used to hand every authenticated client the complete
+    `get_all_data()` -- every cluster, node, guest and storage -- with no role
+    check at all: the handler only inherited the middleware's "are you logged
+    in?" gate. That is the whole data surface of the product, so filtering it
+    in the UI would have been no filtering at all.
+    """
+    if scope is None:
+        return data
+    return {
+        **data,
+        "clusters": {cid: v for cid, v in (data.get("clusters") or {}).items()
+                     if cid in scope},
+    }
 
 
 def _ws_is_paused(ws) -> bool:
@@ -116,16 +157,26 @@ async def broadcast_to_clients(data: dict):
         "timestamp": time.time(),
     })
 
-    # Broadcast to all clients (skip ones whose tab is hidden)
+    # Broadcast to all clients (skip ones whose tab is hidden). Clients that
+    # may see everything share the single pre-encoded message; a restricted
+    # client gets its own, encoded ONCE PER DISTINCT SCOPE rather than once per
+    # client, so N viewers of the same cluster still cost one serialisation.
     dead_clients = set()
+    per_scope: dict = {None: _last_broadcast_message}
     for ws in ws_clients:
         if _ws_is_paused(ws):
             continue
+        scope = getattr(ws, "_jtp_scope", None)
+        message = per_scope.get(scope)
+        if message is None:
+            message = json.dumps({
+                "type": "update",
+                "data": _scope_snapshot(data, scope),
+                "timestamp": time.time(),
+            }, default=str)
+            per_scope[scope] = message
         try:
-            await asyncio.wait_for(
-                ws.send_str(_last_broadcast_message),
-                timeout=2.0
-            )
+            await asyncio.wait_for(ws.send_str(message), timeout=2.0)
         except Exception as e:
             logger.debug(f"Failed to send to client: {e}")
             dead_clients.add(ws)
@@ -144,12 +195,20 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
 
+    # Resolve the caller's cluster scope ONCE, at connect. Role grants change
+    # rarely and a session is re-established on reload, so re-resolving per
+    # broadcast would cost a DB read per client per poll for no benefit.
+    ws._jtp_scope = _visible_cluster_ids(request.get("user"))
+
     ws_clients.add(ws)
-    logger.info(f"WebSocket client connected. Total: {len(ws_clients)}")
+    logger.info(
+        "WebSocket client connected. Total: %d (scope: %s)",
+        len(ws_clients),
+        "all" if ws._jtp_scope is None else f"{len(ws._jtp_scope)} cluster(s)")
 
     # Send initial data
     try:
-        initial_data = cluster_manager.get_all_data()
+        initial_data = _scope_snapshot(cluster_manager.get_all_data(), ws._jtp_scope)
         await ws.send_json({
             "type": "initial",
             "data": initial_data,
@@ -206,23 +265,104 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
 # REST API Handlers
 
-async def get_config_handler(request: web.Request) -> web.Response:
-    """Get current configuration"""
-    config = get_config()
-    # Don't expose sensitive auth data — replace with a sentinel so the UI
-    # can show a "configured" badge without ever seeing the value.
-    config_dict = config.to_dict()
+# Every credential is replaced by this before a config leaves the process. The
+# UI only ever needs "is it set?", and the frontend already keys off this exact
+# string (HoloMatrix reads auth.password === "***" to decide whether a console
+# password prompt is needed).
+_SECRET_SENTINEL = "***"
+
+# Substrings that mark a key inside the free-form auth.ldap dict as a
+# credential. That dict is deliberately schema-less so operators can extend it,
+# which means it cannot be masked field-by-field -- so mask by name and accept
+# the occasional false positive. A masked non-secret is a cosmetic bug; an
+# unmasked bind password is not.
+_SECRET_KEY_HINTS = ("pass", "secret", "token", "key", "cred")
+
+
+def _mask_config_secrets(config_dict: dict) -> dict:
+    """Replace every credential in a serialised Config with a sentinel.
+
+    to_dict() is `asdict(self)` -- the whole dataclass tree, verbatim -- so
+    anything not masked here goes out on the wire. The previous version masked
+    only the two per-cluster fields, which left server.influx_token (the write
+    credential Telegraf agents use) and auth.ldap (the directory bind password)
+    readable by anyone with a session.
+    """
+    srv = config_dict.get("server")
+    if isinstance(srv, dict) and "influx_token" in srv:
+        srv["influx_token"] = _SECRET_SENTINEL if srv.get("influx_token") else ""
+
+    auth = config_dict.get("auth")
+    if isinstance(auth, dict):
+        if "session_secret" in auth:
+            auth["session_secret"] = _SECRET_SENTINEL if auth.get("session_secret") else ""
+        ldap = auth.get("ldap")
+        if isinstance(ldap, dict):
+            for k, v in list(ldap.items()):
+                if any(h in k.lower() for h in _SECRET_KEY_HINTS):
+                    ldap[k] = _SECRET_SENTINEL if v else ""
+
     for cluster in config_dict.get("clusters", []):
         cid = cluster.get("id", "")
         if "auth" in cluster:
-            cluster["auth"]["token_value"] = "***" if cluster["auth"].get("token_value") else ""
+            cluster["auth"]["token_value"] = _SECRET_SENTINEL if cluster["auth"].get("token_value") else ""
             # `auth.password` is sourced from BOTH the encrypted secret store
             # AND (legacy) the yaml field — treat either as "configured".
             yaml_pw = cluster["auth"].get("password") or ""
             store_has = secret_store.has_secret(cid, "pve_password") if cid else False
-            cluster["auth"]["password"] = "***" if (yaml_pw or store_has) else ""
+            cluster["auth"]["password"] = _SECRET_SENTINEL if (yaml_pw or store_has) else ""
+    return config_dict
 
-    return web.json_response(config_dict)
+
+# What a non-admin session is allowed to see. The SPA needs display preferences,
+# the console mode, the alert thresholds it draws bands from, and enough of each
+# cluster to label it -- nothing else. Everything absent from this projection
+# (node addresses, PVE usernames, SSH users and ports, poll intervals, the auth
+# backend, LDAP, audit forwarding, the bind address) is infrastructure detail
+# that a viewer has no reason to hold.
+def _project_config_for_viewer(config_dict: dict) -> dict:
+    out = {
+        "ui": config_dict.get("ui", {}),
+        "alerts": config_dict.get("alerts", {}),
+        "console": {"mode": (config_dict.get("console") or {}).get("mode", "disabled")},
+        "vm_control": {"enabled": (config_dict.get("vm_control") or {}).get("enabled", False)},
+        "clusters": [],
+    }
+    for cluster in config_dict.get("clusters", []):
+        cauth = cluster.get("auth") or {}
+        out["clusters"].append({
+            "id": cluster.get("id", ""),
+            "name": cluster.get("name", ""),
+            "type": cluster.get("type", "pve"),
+            "enabled": cluster.get("enabled", True),
+            # Already sentinel-valued by _mask_config_secrets; the console
+            # prompt decides on presence, never on the value.
+            "auth": {
+                "password": cauth.get("password", ""),
+                "token_value": cauth.get("token_value", ""),
+            },
+        })
+    return out
+
+
+async def get_config_handler(request: web.Request) -> web.Response:
+    """Get current configuration, scoped to the caller.
+
+    This route used to carry NO role check at all (only the POST was
+    admin-gated), so any authenticated session -- including one with no role
+    grant whatsoever -- could read the entire config. Two layers now: secrets
+    are masked for everyone, and everything a viewer has no need for is dropped
+    before the response is built rather than hidden in the UI.
+    """
+    config = get_config()
+    config_dict = _mask_config_secrets(config.to_dict())
+
+    user = request.get("user")
+    # user is None when auth is disabled — same backward-compat policy the rest
+    # of the codebase uses (role_required is a no-op in that mode).
+    if user is None or user.get("role_global") == "admin":
+        return web.json_response(config_dict)
+    return web.json_response(_project_config_for_viewer(config_dict))
 
 
 async def update_config_handler(request: web.Request) -> web.Response:
@@ -541,15 +681,35 @@ def create_app() -> web.Application:
         client_max_size=16 * 1024 * 1024 * 1024,
     )
 
-    # Setup CORS
-    cors = aiohttp_cors.setup(app, defaults={
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=True,
-            expose_headers="*",
-            allow_headers="*",
-            allow_methods="*",
-        )
-    })
+    # CORS. The SPA is served by THIS process from the same origin, so the
+    # browser needs no cross-origin grant to talk to /api/* at all -- the
+    # default is therefore no cross-origin access.
+    #
+    # What was here before was `"*"` with allow_credentials=True. aiohttp_cors
+    # cannot send a literal `*` alongside credentials (browsers reject that
+    # pair), so it echoes the requesting Origin back instead -- which means any
+    # site the operator visited could issue authenticated, cookie-bearing
+    # requests to every endpoint, with any method and any header. SameSite=Lax
+    # blunts the common case but not a compromised sibling subdomain.
+    #
+    # An operator hosting the UI on a different origin sets
+    # `server.cors_origins: ["https://ui.example.net"]`. Explicit list only:
+    # there is no wildcard path back in, and credentials are granted only to
+    # origins named there.
+    cors_origins = [o for o in (getattr(config.server, "cors_origins", None) or [])
+                    if isinstance(o, str) and o.strip() and o.strip() != "*"]
+    if cors_origins:
+        logger.info("CORS: granting credentialed access to %s", ", ".join(cors_origins))
+        cors = aiohttp_cors.setup(app, defaults={
+            o: aiohttp_cors.ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods="*",
+            ) for o in cors_origins
+        })
+    else:
+        cors = aiohttp_cors.setup(app, defaults={})
 
     # WebSocket route
     app.router.add_get("/ws", websocket_handler)

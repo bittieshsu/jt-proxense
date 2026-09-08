@@ -13,13 +13,31 @@ ExecStart=/usr/bin/python3 /opt/jt-proxense/run.py
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+# The application tree is read-only to this service (see ReadWritePaths), so
+# CPython cannot drop __pycache__ beside the sources. Say so rather than having
+# it fail the write on every import.
+Environment=PYTHONDONTWRITEBYTECODE=1
 
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/jt-proxense /var/lib/jt-proxense /etc/jt-proxense
+# Writable paths, named individually. /opt/jt-proxense as a whole used to be
+# here, which handed the service account write access to the very code it
+# executes -- so anything that got command execution inside the web process
+# could edit run.py and wait for a restart to become persistent. Everything
+# below is data; the code above it stays root-owned and read-only.
+#
+#   config.yaml      — rewritten by Settings -> Clusters (POST /api/config)
+#   config_backups/  — timestamped copies made before each of those writes
+#   /var/lib/…       — SQLite: users, sessions, audit, jobs
+#   /etc/jt-proxense — encrypted secret store + master key
+#   /opt/jt-proxense/.ssh — the keypair used to reach PVE nodes. The service
+#     account's home IS the install dir, so this sits inside the code tree by
+#     accident of layout; it is data, and every SSH feature (ZFS, host upgrade,
+#     boot mirror, storage download) stops working without it.
+ReadWritePaths=/opt/jt-proxense/config.yaml /opt/jt-proxense/config_backups /opt/jt-proxense/.ssh /var/lib/jt-proxense /etc/jt-proxense
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

@@ -19,7 +19,7 @@ import type { ClusterData } from '../types';
 // Job / node status enums → translated label (so zh-TW users don't see raw
 // English like "awaiting_reboot"). Unknown values pass through verbatim.
 const _UP_ST = new Set([
-  'pending', 'queued', 'running', 'evacuating', 'updating', 'awaiting_reboot',
+  'pending', 'queued', 'running', 'preflight', 'evacuating', 'updating', 'awaiting_reboot',
   'rebooting', 'restoring', 'done', 'failed', 'skipped', 'aborted',
 ]);
 const stLabel = (t: (k: string) => string, s: string): string =>
@@ -49,7 +49,7 @@ interface JobSummary {
   node_failed?: number;
 }
 type NodeStatus =
-  | 'queued' | 'evacuating' | 'updating' | 'awaiting_reboot'
+  | 'queued' | 'preflight' | 'evacuating' | 'updating' | 'awaiting_reboot'
   | 'rebooting' | 'restoring' | 'done' | 'failed' | 'skipped';
 interface NodeStep {
   id: number;
@@ -84,6 +84,8 @@ function fmtDuration(start: number | null, end: number | null): string {
 }
 const STATUS_TONE: Record<NodeStatus, 'queued' | 'active' | 'pause' | 'ok' | 'fail'> = {
   queued: 'queued',
+  // preflight is read-only: nothing has moved yet.
+  preflight: 'active',
   evacuating: 'active', updating: 'active', rebooting: 'active', restoring: 'active',
   awaiting_reboot: 'pause',
   done: 'ok',

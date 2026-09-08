@@ -23,7 +23,12 @@ die()  { printf "%b  ✗ %s%b\n" "$RED" "$*" "$NC" >&2; exit 1; }
 
 # ---------- config ----------
 REPO_URL="${JT_PROXENSE_REPO_URL:-https://github.com/jasoncheng7115/jt-proxense.git}"
+# What to install. Default is the newest RELEASE TAG, not the tip of main:
+# tracking a branch means two operators running the same one-liner a day apart
+# get different code, and there is nothing to roll back TO. Set
+# JT_PROXENSE_REF=main to follow the development branch deliberately.
 REPO_BRANCH="${JT_PROXENSE_BRANCH:-main}"
+REPO_REF="${JT_PROXENSE_REF:-}"
 INSTALL_DIR="${JT_PROXENSE_INSTALL_DIR:-/opt/jt-proxense}"
 SERVICE_USER="${JT_PROXENSE_USER:-jt-proxense}"
 HTTP_PORT="${JT_PROXENSE_PORT:-8098}"
@@ -154,18 +159,40 @@ export GIT_CONFIG_KEY_0=safe.directory
 export GIT_CONFIG_VALUE_0="$INSTALL_DIR"
 export GIT_CONFIG_COUNT=1
 
+# Resolve what to check out. Prefer the highest semver release tag; fall back to
+# the branch when the repo has no tags yet (or the operator asked for a branch).
+resolve_ref() {
+    if [ -n "$REPO_REF" ]; then
+        echo "$REPO_REF"; return
+    fi
+    local latest
+    latest=$(git ls-remote --tags --refs "$REPO_URL" 'v[0-9]*' 2>/dev/null \
+        | sed 's#.*refs/tags/##' \
+        | sort -V | tail -1)
+    if [ -n "$latest" ]; then
+        echo "$latest"
+    else
+        echo "$REPO_BRANCH"
+    fi
+}
+TARGET_REF=$(resolve_ref)
+
 if [ -d "$INSTALL_DIR/.git" ]; then
-    # Use an explicit refspec so shallow clones can fetch any branch.
+    # Explicit refspecs so a shallow clone can fetch either a tag or a branch.
     git -C "$INSTALL_DIR" fetch --quiet --depth=1 origin \
-        "+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
-    git -C "$INSTALL_DIR" reset --hard --quiet "origin/${REPO_BRANCH}"
-    ok "updated from ${REPO_URL} (${REPO_BRANCH})"
+        "+refs/tags/${TARGET_REF}:refs/tags/${TARGET_REF}" 2>/dev/null \
+      || git -C "$INSTALL_DIR" fetch --quiet --depth=1 origin \
+        "+refs/heads/${TARGET_REF}:refs/remotes/origin/${TARGET_REF}"
+    git -C "$INSTALL_DIR" reset --hard --quiet \
+        "$(git -C "$INSTALL_DIR" rev-parse --verify --quiet "refs/tags/${TARGET_REF}" \
+           || echo "origin/${TARGET_REF}")"
+    ok "updated from ${REPO_URL} (${TARGET_REF})"
 else
     if [ -e "$INSTALL_DIR/run.py" ]; then
         die "${INSTALL_DIR} is non-empty but not a git checkout. Refusing to overwrite. Move it aside or set JT_PROXENSE_INSTALL_DIR."
     fi
-    git clone --depth 1 --quiet --branch "${REPO_BRANCH}" "$REPO_URL" "$INSTALL_DIR"
-    ok "cloned ${REPO_URL} (${REPO_BRANCH})"
+    git clone --depth 1 --quiet --branch "${TARGET_REF}" "$REPO_URL" "$INSTALL_DIR"
+    ok "cloned ${REPO_URL} (${TARGET_REF})"
 fi
 
 # ---------- 5. python deps ----------
@@ -201,6 +228,10 @@ if [ ! -f "$INSTALL_DIR/config.yaml" ]; then
     # hot-reloads. Copying the example used to leave a dummy cluster that
     # failed to connect on first login and made it look like you *had* to
     # hand-edit this file. config.example.yaml stays as the annotated reference.
+    # 0600 BEFORE the first byte: this file grows PVE API tokens as soon as a
+    # cluster is added from the UI, and the mode used to be whatever root's
+    # umask happened to be (022 -> 0644, world-readable, observed in the wild).
+    ( umask 077; : > "$INSTALL_DIR/config.yaml" )
     cat > "$INSTALL_DIR/config.yaml" <<YAML
 # JT-PROXENSE configuration.
 # You do NOT need to edit this file to add PVE clusters — sign in and use
@@ -213,9 +244,22 @@ server:
 # PVE / ESXi connections. Empty = none yet; add them from the web UI.
 clusters: []
 YAML
-    ok "created a clean config.yaml (add clusters in the web UI — no editing needed)"
+    chmod 600 "$INSTALL_DIR/config.yaml"
+    ok "created a clean config.yaml, mode 600 (add clusters in the web UI — no editing needed)"
 else
+    # Idempotent repair for anything installed before this was fixed.
+    if [ "$(stat -c %a "$INSTALL_DIR/config.yaml" 2>/dev/null)" != "600" ]; then
+        chmod 600 "$INSTALL_DIR/config.yaml"
+        warn "config.yaml was not 600 — tightened (it holds PVE API tokens)"
+    fi
     ok "config.yaml already exists — left untouched"
+fi
+# Backups are shutil.copy2'd from config.yaml, so pre-fix copies inherited the
+# loose mode and carry the same tokens.
+if [ -d "$INSTALL_DIR/config_backups" ]; then
+    chmod 700 "$INSTALL_DIR/config_backups" 2>/dev/null || true
+    find "$INSTALL_DIR/config_backups" -type f -name 'config_*.yaml' \
+        -exec chmod 600 {} + 2>/dev/null || true
 fi
 
 # v0.2+: SQLite-backed auth/audit lives in /var/lib/jt-proxense.
@@ -241,9 +285,44 @@ if [ -f "$INSTALL_DIR/bin/jt-proxense" ]; then
     ok "CLI back door installed at /usr/local/bin/jt-proxense"
 fi
 
-# Hand the whole tree to the service user (root may have written .git refs / .pyc)
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR"
-ok "ownership set to ${SERVICE_USER}:${SERVICE_USER}"
+# Ownership: CODE is root's, DATA is the service user's.
+#
+# This used to hand the entire tree to ${SERVICE_USER}, and the systemd unit
+# listed all of /opt/jt-proxense as writable — so the account running the web
+# server could rewrite run.py and the whole server/ package, and anything that
+# achieved command execution inside that process could persist across a
+# restart. The service now owns only what it has to write.
+chown -R root:root "$INSTALL_DIR"
+
+# The two things the running service legitimately writes: the config it
+# rewrites when you add a cluster from the UI, and the backups it takes first.
+# config_backups MUST exist before first start — the app can no longer create
+# it, and systemd refuses to start a unit whose ReadWritePaths names a missing
+# path.
+mkdir -p "$INSTALL_DIR/config_backups"
+chown "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/config_backups"
+chmod 700 "$INSTALL_DIR/config_backups"
+chown "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/config.yaml"
+chmod 600 "$INSTALL_DIR/config.yaml"
+
+# The service account's home is $INSTALL_DIR, so its SSH keypair lives inside
+# the code tree. That key is what reaches the PVE nodes for every SSH-backed
+# feature (ZFS, host upgrade, boot mirror, storage download, NTP), and its
+# public half is already in each node's authorized_keys — root-owning it here
+# would break all of them silently at the next restart.
+if [ -d "$INSTALL_DIR/.ssh" ]; then
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/.ssh"
+    chmod 700 "$INSTALL_DIR/.ssh"
+    find "$INSTALL_DIR/.ssh" -type f ! -name '*.pub' -exec chmod 600 {} + 2>/dev/null || true
+    ok "preserved ${SERVICE_USER} ownership of $INSTALL_DIR/.ssh (PVE node key)"
+else
+    # Must exist before first start: systemd refuses a unit whose
+    # ReadWritePaths names a missing path, and ssh_setup.py generates into it.
+    mkdir -p "$INSTALL_DIR/.ssh"
+    chown "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/.ssh"
+    chmod 700 "$INSTALL_DIR/.ssh"
+fi
+ok "code owned by root (read-only to the service); config, backups and .ssh owned by ${SERVICE_USER}"
 
 # Install systemd unit. The shipped unit runs `/usr/bin/python3`; on RHEL/SUSE
 # that's the old 3.9 default, so repoint ExecStart at the interpreter we chose.

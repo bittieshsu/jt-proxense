@@ -4,9 +4,12 @@
 
 | Version | Supported |
 |---|---|
-| `0.2.x` | ✅ when released |
-| `0.1.x` | ✅ for security fixes only |
-| < 0.1.0 | ❌ |
+| `1.1.x` | ✅ current |
+| `1.0.x` | ✅ security fixes only |
+| < 1.0.0 | ❌ |
+
+Releases up to and including `0.9.9` were published under Apache-2.0; from
+`1.0.0` the project is AGPL-3.0-or-later. See [LICENSE](LICENSE).
 
 ## Reporting a vulnerability
 
@@ -32,15 +35,17 @@ This project is **single-tenant, single-machine**. The threat model assumes:
 
 - The host running jt-proxense is a security boundary. An attacker with root on the host has full control regardless of any in-app guard.
 - The operator deploys behind a reverse proxy with TLS for any non-loopback exposure.
-- The PVE API tokens stored in `config.yaml` are sensitive — protect the file (it's installed mode 600 owned by the service user).
+- The PVE API tokens stored in `config.yaml` are sensitive. It is installed mode `600`, owned by the service user, and the application forces that mode on every write. **This was not true before v1.1.0**: the installer created the file with a plain redirect, so the mode was whatever the installing shell's umask produced — `0644` under the common default. Re-running the installer repairs an existing file and its backups in `config_backups/`.
+- The service account can read and write its data (`config.yaml`, `config_backups/`, `/var/lib/jt-proxense`, `/etc/jt-proxense`, and its SSH keypair) but **not** the application code, which is root-owned and read-only to it. Before v1.1.0 the whole install directory was writable by the service, so code execution inside the web process could be made to survive a restart.
 - The audit log SQLite at `/var/lib/jt-proxense/jt-proxense.db` is the operator's own log; protect the host filesystem.
 
 What we explicitly defend against:
 
 - Brute-force login (Argon2id + per-IP rate limit + optional TOTP 2FA).
 - Session theft via XSS (HttpOnly cookies, no script-readable tokens).
-- CSRF for state-changing endpoints (SameSite=Lax cookies; planned: explicit CSRF tokens for v0.2.x).
-- Privilege escalation between roles (RBAC enforced server-side on every endpoint, including VM-pattern scope).
+- CSRF for state-changing endpoints (SameSite=Lax cookies, plus: cross-origin access is closed by default from v1.1.0 — `server.cors_origins` is an explicit allow-list and a `*` entry is ignored. Before that, a wildcard origin was configured together with `allow_credentials`, which meant any site the operator visited could drive this API with their session. Explicit CSRF tokens remain planned).
+- Privilege escalation between roles. RBAC is enforced server-side, and from v1.1.0 it is genuinely per-cluster: an endpoint under `/api/clusters/{cluster_id}/...` resolves the caller's role *for that cluster*, and the WebSocket snapshot is filtered to the clusters the session may see. Before v1.1.0 the role check read only the global (`*`) grant — so a cluster-scoped grant was ignored at the door, and every authenticated session received the full cross-cluster snapshot over the WebSocket regardless of role.
+- Spoofed client addresses. `X-Forwarded-For` is honoured only from loopback or an address named in `auth.trusted_proxies`; it drives the per-IP login lockout and the `source_ip` in the audit log. Before v1.1.0 every RFC1918 and link-local peer was trusted implicitly, so anyone on the same LAN could walk past the lockout and choose what the audit log recorded.
 - Audit-log tampering by app code (DB-level `BEFORE UPDATE/DELETE` triggers reject mutation; only the operator-driven CLI retention path can purge).
 - Lock-out by misconfigured auth (CLI back door at `/usr/local/bin/jt-proxense` works without the service running).
 
@@ -50,6 +55,7 @@ What we do NOT defend against:
 - A compromised reverse proxy.
 - Resource exhaustion / DoS (out of scope; deploy behind a rate-limiting ingress).
 - Side channels through PVE itself.
+- **A hostile PVE endpoint.** `verify_ssl` defaults to `false` (PVE ships a self-signed certificate) and SSH connections to nodes use `known_hosts=None`, so neither the API nor the SSH path detects an interposed peer. This is a deliberate trade-off for a tool that lives on the same trusted segment as the nodes it manages — but it *is* a gap, and certificate/host-key pinning is the planned fix. Set `verify_ssl: true` per node if your cluster has a real certificate.
 
 ## Public security advisories
 

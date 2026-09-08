@@ -8,10 +8,22 @@ from server import middleware, notifications, secret_store
 
 
 # ── #1 X-Forwarded-For trusted-proxy gating ──────────────────────────────
+#
+# CHANGED in v1.1.0. This table used to expect every RFC1918 and link-local
+# peer to be trusted, on the reasoning that "a reverse proxy sits on the private
+# LAN". That is the vulnerability, not the specification: whoever the peer is,
+# a trusted one gets to choose the value used for the per-IP login lockout and
+# written into the audit log as the source of every action -- and the realistic
+# attacker against an internal tool is already on that LAN. So the test was
+# pinning the bug in place (CLAUDE.md recurring mistake #15).
+#
+# Loopback stays implicit because that is the documented deployment: nginx
+# terminating TLS in front of 127.0.0.1:8098. A proxy anywhere else must be
+# named in auth.trusted_proxies -- see tests/test_trusted_proxy.py.
 @pytest.mark.parametrize("ip,trusted", [
     ("127.0.0.1", True), ("::1", True),
-    ("10.0.0.5", True), ("192.168.1.9", True), ("172.16.4.4", True),
-    ("169.254.1.1", True),                 # link-local also counts as local peer
+    ("10.0.0.5", False), ("192.168.1.9", False), ("172.16.4.4", False),
+    ("169.254.1.1", False),
     ("8.8.8.8", False), ("1.2.3.4", False),
     ("unknown", False), ("", False),
 ])

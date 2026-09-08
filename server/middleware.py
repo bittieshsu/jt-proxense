@@ -60,17 +60,35 @@ def _role_rank(role: Optional[str]) -> int:
     return {"viewer": 1, "operator": 2, "admin": 3}.get(role or "", 0)
 
 
+# Peers we have already warned about sending an untrusted XFF. Bounded by
+# the number of distinct direct peers, which is small in every real
+# deployment; cleared only by a restart.
+_XFF_IGNORED_SEEN: set = set()
+
+
 def _is_trusted_proxy(remote: Optional[str]) -> bool:
-    """Is the immediate peer allowed to set X-Forwarded-For? Reverse proxies
-    sit on loopback or the private LAN, so those are trusted implicitly;
-    additional public proxy IPs/CIDRs come from auth.trusted_proxies."""
+    """Is the immediate peer allowed to set X-Forwarded-For?
+
+    Loopback only, plus whatever `auth.trusted_proxies` names.
+
+    This used to trust every RFC1918, link-local and loopback peer implicitly,
+    on the reasoning that "reverse proxies sit on the private LAN". The
+    realistic attacker against an internal tool is already ON that LAN, and
+    trusting them means the value they put in X-Forwarded-For becomes the
+    identity used for the per-IP login lockout and written into the audit log
+    as the source of every action -- so the rate limiter can be walked straight
+    past with a fresh header value, and the audit trail can be pointed at
+    someone else. The reverse-proxy-on-the-same-host case (the documented
+    deployment, nginx terminating TLS in front of 127.0.0.1:8098) still works
+    untouched; a proxy on another machine must now be named.
+    """
     if not remote:
         return False
     try:
         ip = ipaddress.ip_address(remote)
     except ValueError:
         return False
-    if ip.is_loopback or ip.is_private or ip.is_link_local:
+    if ip.is_loopback:
         return True
     try:
         trusted = config_mod.get_config().auth.trusted_proxies or []
@@ -94,6 +112,17 @@ def _client_ip(request: web.Request) -> str:
     xff = request.headers.get("X-Forwarded-For")
     if xff and _is_trusted_proxy(remote):
         return xff.split(",")[0].strip()
+    if xff:
+        # Say so once per peer. An operator who moved their reverse proxy off
+        # this host would otherwise see every audit row and every rate-limit
+        # decision quietly attributed to the proxy, with nothing explaining why.
+        if remote not in _XFF_IGNORED_SEEN:
+            _XFF_IGNORED_SEEN.add(remote)
+            logger.warning(
+                "ignoring X-Forwarded-For from %s: not a trusted proxy. If this "
+                "is your reverse proxy, add it to auth.trusted_proxies -- until "
+                "then rate limiting and audit records use %s itself.",
+                remote, remote)
     return remote
 
 
@@ -257,8 +286,45 @@ def auth_required(handler: Callable[..., Awaitable]):
     return wrapped
 
 
+def effective_role(request: web.Request) -> Optional[str]:
+    """The caller's role AGAINST THE THING THIS REQUEST TARGETS.
+
+    Grants are `(user, cluster_id|*) -> role` and `auth.role_for()` already
+    resolves them correctly: it matches rows for the named cluster *and* rows
+    scoped to `*`, then returns the highest rank. What was missing is that
+    role_required() never asked -- it read `role_global`, which is literally
+    `role_for(user, "*")`, so a per-cluster grant was invisible to it.
+
+    The effect was a permission model that read as "per-cluster" in the README
+    and the CLI, and behaved as "global only" at the door: a user granted
+    `cluster1 operator` and nothing else had `role_global = None`, rank 0, and
+    was refused by every decorated endpoint on the cluster they were explicitly
+    given. VM-level handlers were fine, because those call `_check_vm_role()`,
+    which does pass the cluster through -- two authorization systems, one
+    right.
+
+    Routes that name no cluster (`/api/users`, `/api/config`, `/api/audit`)
+    still resolve against `*` only, so a cluster-scoped admin does not become a
+    global one.
+    """
+    user = request.get("user")
+    if user is None:
+        return None
+    cluster_id = request.match_info.get("cluster_id")
+    user_id = user.get("id")
+    if cluster_id and user_id is not None:
+        return auth_mod.role_for(user_id, cluster_id)
+    # No cluster in the path, or a caller that carries no user id (the auth
+    # middleware always sets one; test doubles and any future synthetic request
+    # may not). Fall back to the global grant -- which is what this function
+    # returned for every request before, so the fallback can only ever be
+    # narrower than a cluster-scoped lookup, never wider.
+    return user.get("role_global")
+
+
 def role_required(min_role: str):
-    """Reject 403 when user's role is below `min_role`. No-op if auth disabled."""
+    """Reject 403 when the user's role for this request's target is below
+    `min_role`. No-op if auth disabled. See effective_role()."""
     needed = _role_rank(min_role)
     if needed == 0:
         raise ValueError(f"unknown role: {min_role}")
@@ -270,7 +336,7 @@ def role_required(min_role: str):
             if user is None:
                 # auth disabled -> permit (matches v0.1 behaviour)
                 return await handler(request, *a, **kw)
-            if _role_rank(user.get("role_global")) >= needed:
+            if _role_rank(effective_role(request)) >= needed:
                 return await handler(request, *a, **kw)
             return web.json_response(
                 {"error": "forbidden", "required_role": min_role},

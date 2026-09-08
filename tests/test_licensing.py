@@ -81,6 +81,11 @@ def test_vendored_browser_assets_are_declared():
 @pytest.mark.parametrize("doc", [
     "README.md", "README_zh-tw.md", "CONTRIBUTING.md",
     "docs/index.html", "docs/index.zh-tw.html",
+    # The notices file was NOT on this list, which is how "the full text of the
+    # Apache License is reproduced in LICENSE" survived the relicence -- in the
+    # one document whose whole job is to state licences accurately, and the one
+    # v1.0.0 was rewritten to fix.
+    "THIRD-PARTY-NOTICES.md",
 ])
 def test_no_document_still_claims_apache(doc):
     """Every surface that names the licence must agree with LICENSE.
@@ -92,6 +97,17 @@ def test_no_document_still_claims_apache(doc):
     if not p.exists():
         pytest.skip(f"{doc} not in this tree")
     for i, line in enumerate(p.read_text().splitlines(), 1):
-        if re.search(r"Apache[ -]?(License )?2", line):
-            assert re.search(r"v?0\.9\.9|irrevocable|不可撤回|permanently|永久", line), (
-                f"{doc}:{i} still claims Apache 2.0: {line.strip()[:100]}")
+        # `Apache[ -]?(License )?2` does not match "Apache License, Version 2.0"
+        # -- the comma and the word "Version" sit between. That is the exact
+        # spelling THIRD-PARTY-NOTICES.md used, so even listing the file here
+        # would not have caught it.
+        if not re.search(r"Apache[ -]?(License,?\s*(Version\s*)?)?2", line, re.I):
+            continue
+        # A dependency table row states somebody ELSE's licence, and many of
+        # ours really are Apache-2.0. The claim this test exists to catch is
+        # about THIS project, which is prose.
+        if line.lstrip().startswith("|"):
+            continue
+        assert re.search(r"v?0\.9\.9|irrevocable|不可撤回|permanently|永久"
+                         r"|dependencies|apache\.org|never contained", line), (
+            f"{doc}:{i} still claims Apache 2.0: {line.strip()[:100]}")

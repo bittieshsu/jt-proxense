@@ -8,6 +8,226 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.0] — 2026-09-09
+
+An external review of v1.0.1 found a set of defaults and boundaries that were
+wrong rather than merely weak. Everything below was confirmed against the code
+before being changed, and each fix ships with a test that was verified to fail
+without it.
+
+Three of these change behaviour on upgrade; they are called out inline.
+
+### Security
+
+- **`config.yaml` could be world-readable, and it holds PVE API tokens.** The
+  installer created it with a plain `cat >`, so the mode was whatever the
+  installing shell's umask produced — `0644` under the common default, which is
+  what we found on a real host. `save_config()` did not set a mode either, and
+  `config_backups/` inherited whatever the live file had, because `copy2`
+  preserves the source mode. The installer now creates the file under
+  `umask 077` and repairs existing installs and their backups on every run; the
+  application forces `0600` on every write.
+
+- **A config file that could not be parsed disabled authentication.**
+  `load_config()` caught every exception and fell back to `Config()`, whose
+  defaults are `auth.enabled: false` and `host: 0.0.0.0`. A truncated or
+  hand-edited YAML therefore turned an authenticated instance into an open one
+  at the next restart, with nothing but a line in the journal to say so. It now
+  refuses to start and names the backup directory. A *missing* file is still a
+  first install and still yields defaults.
+
+- **Saving the config was neither atomic nor honest about failing.**
+  `open(path, "w")` truncates before the first byte is written, so a crash
+  mid-dump left a half-written config — which the change above now refuses to
+  start on. And the whole body was wrapped in `except Exception: log; return
+  config`, so `POST /api/config` reported success on a write that had failed.
+  The write is now temp-file + fsync + atomic rename, the serialised form is
+  read back before it replaces anything, and a failure reaches the caller.
+
+- **`GET /api/config` had no role check and masked only two fields.** The POST
+  was admin-gated; the GET was not gated at all, and `to_dict()` is
+  `asdict(self)` — the whole dataclass tree. Any authenticated session,
+  including one with no role grant whatsoever, could read `server.influx_token`
+  and the `auth.ldap` bind password along with every node address. Secrets are
+  now replaced by a sentinel for everyone, and a non-admin receives only the
+  projection the SPA actually reads: display preferences, alert thresholds, the
+  console mode, and each cluster's id, name and "is a password configured".
+
+- **A wildcard CORS origin was configured together with `allow_credentials`.**
+  `aiohttp_cors` cannot send a literal `*` with credentials, so it echoes the
+  requesting Origin instead — meaning any site the operator visited could issue
+  cookie-bearing requests to every endpoint, with any method and any header.
+  **Behaviour change:** cross-origin access is now closed by default. The SPA
+  is served by this same process, so it needs no grant. An operator hosting the
+  UI elsewhere sets `server.cors_origins` to an explicit list; a `*` entry is
+  ignored.
+
+- **Any peer on the LAN could forge its own source address.**
+  `X-Forwarded-For` was honoured from every RFC1918, link-local and loopback
+  peer. That value is the identity the per-IP login lockout counts against and
+  the `source_ip` written into every audit row, so the lockout could be walked
+  past with a fresh header on each attempt and the audit trail pointed at
+  someone else. **Behaviour change:** only loopback is implicit now; a reverse
+  proxy anywhere else must be named in `auth.trusted_proxies`. An ignored
+  `X-Forwarded-For` is logged once per peer, because otherwise every audit row
+  silently changes meaning.
+
+- **The service account could rewrite the code it was executing.** The unit
+  hardened `ProtectSystem=strict` and then listed all of `/opt/jt-proxense` in
+  `ReadWritePaths`, and the installer chowned the whole tree to the service
+  user — so anything that achieved command execution inside the web process
+  could edit `run.py` and wait for a restart. **Behaviour change:** code is
+  root-owned and read-only to the service; `ReadWritePaths` now names only
+  `config.yaml`, `config_backups/`, the service's `.ssh` directory,
+  `/var/lib/jt-proxense` and `/etc/jt-proxense`. The `.ssh` exception is not
+  cosmetic: the service account's home *is* the install directory, and that
+  keypair is what reaches the PVE nodes for ZFS, host upgrade, boot mirror and
+  storage download.
+
+- **Per-cluster RBAC was not enforced at the door.** Grants have always been
+  `(user, cluster_id|*) -> role` and `auth.role_for()` resolves them correctly,
+  but `role_required()` read `role_global`, which is literally
+  `role_for(user, "*")`. So a user granted `cluster1 operator` and nothing else
+  had rank 0 and was refused by every decorated endpoint on the cluster they
+  had been given, while VM-level handlers — which call `_check_vm_role()` and
+  do pass the cluster through — worked correctly. Two authorization systems,
+  one of them right. Endpoints under `/api/clusters/{cluster_id}/…` now resolve
+  the caller's role for that cluster; routes that name no cluster still resolve
+  against `*` only, so a cluster admin does not become a user administrator.
+
+- **The WebSocket handed every authenticated session the whole estate.** `/ws`
+  inherited the middleware's "are you logged in?" gate and nothing else, then
+  sent `get_all_data()` — every cluster, node, guest and storage. Snapshots and
+  broadcasts are now filtered to the clusters the session may see, encoded once
+  per distinct scope so N viewers of one cluster still cost one serialisation.
+
+### Fixed
+
+- **`type: esxi` could never select the ESXi adapter.** `Config.from_dict()`
+  built `ClusterConfig` without passing `type`, so the field round-tripped to
+  `"pve"` no matter what the file said — and re-saving the config rewrote it.
+
+- **`npm run lint` had never worked.** The script invoked ESLint, which is not
+  in `devDependencies` and never was. Replaced with `npm run typecheck`
+  (`tsc --noEmit`), which passes today and is the check that matters for the
+  failure it was standing in for. A real ESLint setup is still outstanding.
+
+- **THIRD-PARTY-NOTICES.md claimed the Apache 2.0 text was reproduced in
+  LICENSE**, which has carried the AGPL since v1.0.0. `test_licensing.py` was
+  supposed to prevent exactly this and missed it twice over: the notices file
+  was not in the list of documents it checked, and its regex did not match the
+  spelling actually used ("Apache License, Version 2.0" — the comma and
+  "Version" sit between the two halves it looked for). Both fixed.
+
+- **SECURITY.md still described v0.1/v0.2.** Supported versions, the config
+  file's real mode, the CORS and X-Forwarded-For positions above, and the
+  `verify_ssl` / SSH host-key trade-off are now stated accurately, including
+  where the product does *not* defend you.
+
+### Testing
+
+- **The OWASP scanner's CORS check was blind to this codebase.** It matched
+  `allow_origins=["*"]`, the Starlette spelling; this project configures
+  `aiohttp_cors.setup(app, defaults={"*": …})`. So a live credentialed wildcard
+  scored a green tick on every release for thirty-odd versions. A checker that
+  answers "clean" for something it cannot see is worse than no checker.
+
+- **Two tests hung forever on Python 3.12.** `asyncio.Server.wait_closed()`
+  waits for handler connections to close as of 3.12; both TCP audit-forwarder
+  tests returned from their handler without closing the writer, so the suite
+  stopped dead at test 37 and never finished on a current interpreter.
+
+- **A test opened the operator's real database.** `test_cli_db_path.py` pops
+  `$JTPROXENSE_DB_PATH` so the other two tests can assert the config/env
+  precedence, which left the third falling through to the default —
+  `/var/lib/jt-proxense/jt-proxense.db`, the live database on any host that has
+  one.
+
+- **CI never built the frontend**, so a TypeScript error could reach `main` and
+  surface only in a hand-run release build. The workflow now type-checks,
+  builds, and audits production dependencies. It also runs pytest on **3.10 and
+  3.12**: the job tested only 3.10 while the code was developed against 3.12,
+  which is how behaviour differing between them stayed invisible in both
+  directions. Test tooling is pinned — unpinned, a new `pytest-asyncio` major
+  turns three already-tagged releases red without a line of code changing,
+  which is what the run history shows.
+
+- `scripts/run-tests.sh` runs the suite with its temp files inside the project
+  and its CPU priority lowered, and `release-gate.sh` / `security-full.sh` now
+  resolve the interpreter (`.venv`, then the system) instead of hardcoding
+  `python3`, which on the build host has neither pytest nor aiohttp.
+
+### Changed
+
+- **The installer now installs the newest release tag, not the tip of `main`.**
+  Tracking a branch means two operators running the same one-liner a day apart
+  get different code and there is nothing to roll back to. `JT_PROXENSE_REF`
+  overrides; with no tags published yet it falls back to the branch.
+
+## [1.0.2] — 2026-09-02
+
+### Fixed
+- **The batch host upgrade had no concept of an HA-managed guest.** It migrated
+  every running guest itself, including HA ones — which fights the HA manager.
+  A `vm_migrate` on an HA-managed guest is routed through `ha-manager migrate`,
+  and PVE *accepts* a migration that a STRICT node-affinity rule forbids, then
+  fails it asynchronously with exit 2. Half the node ends up evacuated, the
+  orchestrator correctly refuses to reboot, and the operator migrates the
+  strays back by hand.
+
+  HA-managed guests now go through the mechanism Proxmox built for this window:
+  `ha-manager crm-command node-maintenance enable <node>`. The HA manager moves
+  its own services off, records where each came from, and returns them when
+  maintenance is lifted — and the LRM watchdog stays armed until they have all
+  moved. We wait for the node to actually drain (the CRM command is queued, so
+  its exit status says nothing about whether anything moved) and refuse to
+  reboot if it does not. If the node cannot be taken out of maintenance
+  afterwards, the log names the exact command that clears it, because a node
+  silently left in maintenance never hosts an HA service again.
+
+- **The orchestrator was the one path that moved guests without asking
+  `migrate_guard`.** It is already wired into single-VM migration and node
+  maintenance; the sweep that unattendedly empties a whole host was not using
+  it. Placement now filters each guest's candidate targets by HA affinity rules
+  and storage availability *before* anything moves, so an impossible migration
+  is reported as a refusal instead of being discovered halfway through. The
+  planner distinguishes "no target has room" from "no target is permitted" —
+  they need different fixes.
+
+- **Nothing was checked before the workload was moved.** A new pre-flight step
+  verifies SSH reachability, root-filesystem headroom (refuse under 2 GiB, warn
+  under 5 GiB — a dist-upgrade that fills `/` leaves dpkg half-configured) and
+  that the apt repositories are reachable, and records how many packages are
+  pending. A host that cannot be upgraded is now discovered while its guests
+  are still where they belong.
+
+  Its `preflight` status is deliberately resumable: it is the only non-terminal
+  state in which nothing has been mutated, so a daemon restart during it simply
+  re-runs the host instead of failing it for manual review.
+
+- **In-place mode is refused on a node hosting HA guests.** It shuts guests
+  down, and the HA manager starts anything with `request_state: started` right
+  back up — an unwinnable loop on a node about to reboot.
+
+- **"We could not read the HA state" was reported as "there is no HA."** The
+  first cut of the change above returned an empty list when
+  `/cluster/ha/status/current` could not be read — so an API token missing
+  `Sys.Audit`, or one unreachable moment, would have told the orchestrator this
+  node hosts no HA guests and sent it straight back to migrating them by hand.
+  The bug the change exists to prevent, now silent. Unknown is now its own
+  answer and refuses the host, and the drain wait never reports "drained" on a
+  reading it could not take.
+
+- **A 30-minute HA drain could not be interrupted.** Every other long wait in
+  the orchestrator honours abort; this one did not.
+
+- **Two upgrade sweeps could run against one cluster at once.** Each job kept
+  its own in-flight set and could not see the other, so both would evacuate a
+  node while planning against a memory pool the other was also spending.
+  Starting a second sweep now returns `409 cluster_busy`.
+
+---
+
 ## [1.0.1] — 2026-08-24
 
 ### Fixed

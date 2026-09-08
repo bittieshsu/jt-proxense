@@ -47,6 +47,7 @@ from typing import Optional
 from aiohttp import web
 
 from . import audit, db
+from . import migrate_guard
 from . import ssh_util
 from .cluster_manager import cluster_manager
 from .middleware import role_required
@@ -112,6 +113,11 @@ _TERMINAL_STATUSES = ("done", "failed", "skipped", "aborted")
 # fresh job starts every node 'queued'). These cannot be safely auto-resumed.
 _IN_FLIGHT_STATUSES = ("evacuating", "updating", "awaiting_reboot",
                        "rebooting", "restoring")
+# 'preflight' is deliberately NOT in either tuple, so it falls through to 'run'.
+# It is the one non-terminal state in which NOTHING has been mutated: no guest
+# has moved, no package has been installed, the node has not been touched. A
+# daemon restart during it can therefore simply re-run the host, rather than
+# failing it for manual review the way a half-finished evacuation must be.
 
 
 def _resume_disposition(status: str) -> str:
@@ -334,6 +340,263 @@ async def _wait_ceph_clean(cluster, job_id: int, node_id: int) -> bool:
         await asyncio.sleep(_CEPH_POLL_S)
 
 
+# ───────────────────────────────────────────────── HA maintenance mode
+#
+# An HA-managed guest must NOT be migrated by us. PVE has a mechanism built for
+# exactly this window: `ha-manager crm-command node-maintenance enable <node>`
+# makes the HA manager move every managed service off the node ITSELF, record
+# where each one came from, and move them back when maintenance is disabled.
+# The LRM's self-fencing watchdog stays armed until all services have moved.
+#
+# Doing it by hand instead fights the HA manager: a `vm_migrate` on an
+# HA-managed guest is routed through `ha-manager migrate`, which PVE ACCEPTS
+# (200 + UPID) and then fails asynchronously with exit 2 if a STRICT
+# node-affinity rule forbids the target -- CLAUDE.md #22, and the reason
+# migrate_guard exists. This orchestrator was the one path that never used it.
+#
+# There is no REST endpoint: upstream's `node-maintenance` subcommand only
+# queues a CRM command (`queue_crm_commands("enable-node-maintenance <node>")`),
+# so this runs over SSH -- which this whole module already requires.
+
+_HA_DRAIN_WAIT_S = 1800     # 30 min for the HA manager to move its services
+_HA_POLL_S = 5.0
+
+
+def _split_sid(sid: str) -> tuple[str, int] | None:
+    """'ct:100' -> ('lxc', 100). PVE writes vm:/ct:; our cache uses qemu/lxc."""
+    try:
+        kind, vmid = (sid or "").split(":", 1)
+    except ValueError:
+        return None
+    kind = {"vm": "qemu", "ct": "lxc"}.get(kind.strip())
+    if not kind:
+        return None
+    try:
+        return kind, int(vmid)
+    except ValueError:
+        return None
+
+
+async def _ha_services_on(cluster, node: str) -> Optional[list[dict]]:
+    """HA-managed guests the HA manager currently places on `node`.
+
+    Read from /cluster/ha/status/current, whose `type: "service"` rows carry
+    `sid` and `node`. We deliberately do NOT parse the `lrm:<node>` status
+    STRING to decide whether maintenance has taken effect -- "have the services
+    actually left?" is answerable from data the producer emits, and a status
+    string is a format we do not control (CLAUDE.md #15).
+
+    Three distinct answers, and conflating the last two is a real bug:
+      [] ....... readable, and this node hosts no HA service
+      [...] .... readable, these services are on it
+      None ..... we COULD NOT READ the HA state
+
+    None is not "no HA". A token missing Sys.Audit, or a momentarily
+    unreachable endpoint, would otherwise mean "no HA guests here" -- and the
+    caller would go straight back to migrating HA guests by hand, which is the
+    entire bug this code exists to prevent, now happening silently. Same lesson
+    as migrate-targets answering `unknown` instead of `[]` (CLAUDE.md #28): do
+    not turn "we did not see it" into a statement about the world.
+    """
+    try:
+        rows = await cluster.client.list_ha_status()
+    except Exception as e:
+        logger.warning("ha status unreadable for %s: %s", node, e)
+        return None
+    out = []
+    for r in rows or []:
+        if (r.get("type") or "") != "service":
+            continue
+        if (r.get("node") or "") != node:
+            continue
+        parsed = _split_sid(r.get("sid") or "")
+        if not parsed:
+            continue
+        kind, vmid = parsed
+        out.append({"sid": r.get("sid"), "kind": kind, "vmid": vmid,
+                    "state": r.get("state")})
+    return out
+
+
+async def _ha_maintenance(cluster, node: str, enable: bool,
+                          node_id: int) -> bool:
+    """Enter/leave HA maintenance mode for `node`.
+
+    The command is queued into /etc/pve by any cluster member, so we prefer to
+    run it from a DIFFERENT online node: on the way out we may need to disable
+    maintenance for a node that failed to come back, and SSHing to a host that
+    is down cannot work.
+    """
+    verb = "enable" if enable else "disable"
+    via = None
+    for cand, info in cluster.cache.nodes.items():
+        if cand == node:
+            continue
+        if (getattr(info, "status", "") or "").lower() == "online":
+            via = cand
+            break
+    if via is None:
+        via = node          # single-node or every sibling offline
+    # Both names end up in a shell command line. `node` is already validated at
+    # job creation, but `via` comes from the PVE-supplied node list rather than
+    # from that checked set — so validate both here rather than trust where
+    # they came from. Nothing legitimate is excluded: these are PVE node names.
+    if not _NODE_RE.match(node) or not _NODE_RE.match(via):
+        await _ev(node_id, "error",
+                  f"refusing to run ha-manager: unsafe node name "
+                  f"({node!r} via {via!r})")
+        return False
+    host, user, port = _ssh_for(cluster, via)
+    cmd = f"ha-manager crm-command node-maintenance {verb} {node}"
+    try:
+        async with await ssh_util.connect(host, user, port) as conn:
+            r = await conn.run(cmd, check=False)
+        if r.exit_status != 0:
+            await _ev(node_id, "warn",
+                      f"ha: `{cmd}` via {via} exited {r.exit_status}: "
+                      f"{(r.stderr or '').strip()[:200]}")
+            return False
+    except Exception as e:
+        await _ev(node_id, "warn", f"ha: `{cmd}` via {via} failed: {e}")
+        return False
+    await _ev(node_id, "info", f"ha: maintenance {verb}d for {node} (via {via})")
+    return True
+
+
+async def _wait_ha_drained(cluster, node: str, node_id: int,
+                           job_id: Optional[int] = None) -> bool:
+    """Block until the HA manager has moved every managed service off `node`.
+
+    The CRM command is queued, not synchronous, so "enable returned 0" says
+    nothing about whether anything moved. Rebooting a node whose HA services
+    are still on it is the failure this whole change exists to prevent, so a
+    timeout here fails the host rather than proceeding.
+    """
+    deadline = time.time() + _HA_DRAIN_WAIT_S
+    last_n = -1
+    unreadable = 0
+    while time.time() < deadline:
+        # A 30-minute wait the operator cannot interrupt is its own defect;
+        # every other long wait in this module checks for abort.
+        if job_id is not None and _control.is_aborted(job_id):
+            await _ev(node_id, "warn", "ha: drain wait aborted by operator")
+            return False
+        svcs = await _ha_services_on(cluster, node)
+        if svcs is None:
+            # Unknown is not drained. Keep waiting rather than reboot a node
+            # whose HA state we cannot see.
+            unreadable += 1
+            if unreadable == 1 or unreadable % 12 == 0:
+                await _ev(node_id, "warn",
+                          "ha: cannot read HA status — treating the node as NOT "
+                          "drained and continuing to wait")
+            await asyncio.sleep(_HA_POLL_S)
+            continue
+        unreadable = 0
+        if not svcs:
+            await _ev(node_id, "info", "ha: all managed services have left the node")
+            return True
+        if len(svcs) != last_n:
+            last_n = len(svcs)
+            await _ev(node_id, "info",
+                      f"ha: waiting for {len(svcs)} managed service(s) to move: "
+                      + ", ".join(s["sid"] for s in svcs[:8]))
+        await asyncio.sleep(_HA_POLL_S)
+    left = await _ha_services_on(cluster, node)
+    n = "an unknown number of" if left is None else str(len(left))
+    await _ev(node_id, "error",
+              f"ha: {n} service(s) still on {node} after "
+              f"{_HA_DRAIN_WAIT_S // 60} min — not rebooting this host")
+    return False
+
+
+# ───────────────────────────────────────────────────────── pre-flight
+#
+# Everything here runs BEFORE a single guest is moved. The point is that a host
+# which cannot be upgraded should be discovered while its workload is still
+# where it belongs -- not after half of it has been migrated away and stranded.
+
+_DISK_FREE_BLOCK = 2 * 1024 ** 3    # apt needs room; below this, refuse
+_DISK_FREE_WARN = 5 * 1024 ** 3     # above block, below this, proceed + warn
+
+
+def _inplace_ha_conflict(ha_svcs: list, in_place: bool, source: str) -> Optional[str]:
+    """in_place mode shuts guests down instead of migrating them.
+
+    For an HA-managed guest whose request_state is 'started', the HA manager
+    simply starts it again — so we would be shutting guests down in a loop on a
+    node we are about to reboot. There is no safe way to express "stay down"
+    without rewriting the HA resource state, which is not ours to change during
+    an upgrade. Refuse instead, and say which mode to use.
+
+    Returns the refusal reason, or None when there is no conflict.
+    """
+    if not (in_place and ha_svcs):
+        return None
+    return (f"{len(ha_svcs)} HA-managed guest(s) on {source}: in-place mode would "
+            f"shut them down and the HA manager would start them again. Use auto "
+            f"or manual evacuation for this host.")
+
+
+async def _preflight_host(cluster, node: str, node_id: int) -> tuple[bool, str]:
+    """SSH reachability, root-filesystem headroom, and apt repo sanity.
+
+    Returns (ok, reason). `reason` is empty on success and is what the host's
+    `error` column gets on failure.
+    """
+    try:
+        host, user, port = _ssh_for(cluster, node)
+    except Exception as e:
+        return False, f"cannot resolve an SSH target for {node}: {e}"
+    try:
+        async with await ssh_util.connect(host, user, port) as conn:
+            # 1. Root filesystem headroom. A dist-upgrade that fills / leaves
+            #    dpkg half-configured, which is a far worse state to be in than
+            #    a host we declined to touch.
+            r = await conn.run("df -B1 --output=avail / | tail -1", check=False)
+            avail = 0
+            try:
+                avail = int((r.stdout or "0").strip())
+            except ValueError:
+                pass
+            gib = avail / 1024 ** 3
+            if avail and avail < _DISK_FREE_BLOCK:
+                return False, (f"only {gib:.1f} GiB free on / "
+                               f"(need at least {_DISK_FREE_BLOCK / 1024 ** 3:.0f} GiB)")
+            if avail and avail < _DISK_FREE_WARN:
+                await _ev(node_id, "warn",
+                          f"only {gib:.1f} GiB free on / — upgrade may be tight")
+            elif avail:
+                await _ev(node_id, "info", f"disk: {gib:.1f} GiB free on /")
+
+            # 2. Repos reachable, and how much work this host actually has.
+            #    apt-get update runs again as part of APT_CMD; doing it here as
+            #    well is cheap and moves an unreachable-mirror failure to before
+            #    the evacuation.
+            r = await conn.run("apt-get update -qq", check=False)
+            if r.exit_status != 0:
+                return False, ("apt-get update failed: "
+                               + ((r.stderr or r.stdout or "").strip()[:200]
+                                  or f"exit {r.exit_status}"))
+            r = await conn.run(
+                "apt-get -s dist-upgrade 2>/dev/null | grep -c '^Inst ' || true",
+                check=False)
+            try:
+                pending = int((r.stdout or "0").strip() or 0)
+            except ValueError:
+                pending = -1
+            await _patch_node_detail(node_id, {
+                "disk_free_bytes": avail,
+                "pending_packages": pending,
+            })
+            await _ev(node_id, "info",
+                      f"pre-flight ok: {pending} package(s) to upgrade"
+                      if pending >= 0 else "pre-flight ok")
+    except Exception as e:
+        return False, f"pre-flight SSH to {node} failed: {e}"
+    return True, ""
+
+
 # ─────────────────────────────────────────────────────── helpers
 
 def _ssh_for(cluster, node: str) -> tuple[str, str, int]:
@@ -439,7 +702,8 @@ def _guest_mem_bytes(vm) -> float:
     return max(total, used, 512 * 1024 ** 2)
 
 
-def _plan_evacuation(free_budget: dict, guests: list) -> tuple:
+def _plan_evacuation(free_budget: dict, guests: list,
+                     allowed: Optional[dict] = None) -> tuple:
     """Pure placement planner. `free_budget` maps target -> free bytes; `guests`
     is a list of (vmid, mem_bytes). Places the biggest guests first onto the
     roomiest target that still fits them — this spreads load AND guarantees no
@@ -447,16 +711,31 @@ def _plan_evacuation(free_budget: dict, guests: list) -> tuple:
     but no single node can hold a large guest (fragmentation). Returns
     (assignments, shortfall): assignments is a list of (vmid, target); shortfall
     is None on success, or a human-readable reason for the first guest that
-    could not be placed (caller must then abort without rebooting)."""
+    could not be placed (caller must then abort without rebooting).
+
+    `allowed` optionally maps vmid -> the set of targets that guest may legally
+    reach (HA node-affinity rules and storage availability, from
+    migrate_guard.viable_targets). Room is not the only thing that makes a
+    placement valid: PVE ACCEPTS a migration forbidden by a STRICT affinity
+    rule and fails it later inside ha-manager, so an unfiltered plan strands
+    guests on the way out. A guest with an empty allowed set can go nowhere,
+    which is a shortfall like any other.
+    """
     free = dict(free_budget)
     assignments = []
     for vmid, mem in sorted(guests, key=lambda g: g[1], reverse=True):
-        fits = {t: f for t, f in free.items() if f >= mem}
+        legal = free if allowed is None else {
+            t: f for t, f in free.items() if t in (allowed.get(vmid) or set())}
+        if not legal:
+            return assignments, (
+                f"guest {vmid} has no legal target: HA rules or storage "
+                f"availability rule out every candidate node")
+        fits = {t: f for t, f in legal.items() if f >= mem}
         if not fits:
-            biggest = max(free.values()) if free else 0.0
+            biggest = max(legal.values())
             return assignments, (
                 f"guest {vmid} needs {mem / 1024 ** 3:.1f} GiB but the roomiest "
-                f"target only has {biggest / 1024 ** 3:.1f} GiB free")
+                f"legal target only has {biggest / 1024 ** 3:.1f} GiB free")
         target = max(fits, key=fits.get)
         assignments.append((vmid, target))
         free[target] -= mem
@@ -479,7 +758,8 @@ async def _wait_for_task(cluster, node: str, upid: str, max_s: int) -> dict:
 
 
 async def _evacuate_node(cluster, source: str, targets: list[str],
-                          node_id: int, committed: Optional[dict] = None) -> list[dict]:
+                          node_id: int, committed: Optional[dict] = None,
+                          exclude_vmids: Optional[set] = None) -> list[dict]:
     """Migrate every guest off `source`, placed by an ABSOLUTE memory-headroom
     planner so no target is ever overcommitted (the demo-incident OOM lesson).
     If the target pool can't hold the load — in aggregate OR because no single
@@ -491,6 +771,22 @@ async def _evacuate_node(cluster, source: str, targets: list[str],
     plan sees the guests this host just moved."""
     results: list[dict] = []
     vms = _vms_on_node(cluster, source)
+    # HA-managed guests are NOT ours to move: maintenance mode already relocated
+    # them and recorded where they came from, and migrating them by hand would
+    # fight the HA manager (and be undone by it).
+    #
+    # `ha_vmids` is captured by the CALLER before maintenance mode drains the
+    # node — re-querying here would return an empty set (they have left), while
+    # the poll cache can still show them on the source for another cycle. We
+    # would then "evacuate" guests that are already gone.
+    ha_vmids = set(exclude_vmids or ())
+    if ha_vmids:
+        skipped = sorted(ha_vmids & {int(v.vmid) for v in vms})
+        if skipped:
+            await _ev(node_id, "info",
+                      "leaving HA-managed guest(s) to the HA manager: "
+                      + ", ".join(str(v) for v in skipped))
+    vms = [v for v in vms if int(v.vmid) not in ha_vmids]
     if not vms:
         return results
     vms_by_id = {int(v.vmid): v for v in vms}
@@ -499,7 +795,41 @@ async def _evacuate_node(cluster, source: str, targets: list[str],
     demand = sum(m for _, m in guests)
     capacity = sum(max(0.0, f) for f in free_budget.values())
 
-    plan, shortfall = _plan_evacuation(free_budget, guests)
+    # Which targets each guest may LEGALLY reach. Capacity alone is not enough:
+    # PVE accepts a migration a STRICT HA affinity rule forbids, then fails it
+    # asynchronously inside ha-manager, and a storage that is not on the target
+    # fails the same way. migrate_guard already answers both questions and is
+    # already wired into the single-VM and maintenance paths; this orchestrator
+    # was the one that moved guests without asking.
+    allowed: dict[int, set] = {}
+    unchecked: list[int] = []
+    for v in vms:
+        vmid = int(v.vmid)
+        try:
+            ok_targets = await migrate_guard.viable_targets(
+                cluster, getattr(v, "type", "qemu"), vmid, source, list(targets),
+                online=(getattr(v, "type", "qemu") != "lxc"),
+            )
+        except Exception as e:
+            # Deliberate trade-off, stated plainly because the previous comment
+            # here claimed the opposite of what the code does: a guard that
+            # cannot answer does NOT refuse the host. Failing closed on a
+            # transient read error would block upgrades entirely, and the layer
+            # below (ha_affinity) already treats unreadable HA data as "no
+            # restrictions" — so failing closed here would buy confidence it
+            # cannot actually deliver. We proceed as before the guard existed,
+            # but say so loudly and record it on the node.
+            await _ev(node_id, "warn",
+                      f"migrate pre-check for {vmid} failed ({e}); proceeding "
+                      f"WITHOUT a legality check for this guest")
+            unchecked.append(vmid)
+            ok_targets = list(targets)
+        allowed[vmid] = set(ok_targets)
+
+    if unchecked:
+        await _patch_node_detail(node_id, {"unchecked_migrations": unchecked})
+
+    plan, shortfall = _plan_evacuation(free_budget, guests, allowed)
     if shortfall is not None:
         await _ev(node_id, "error",
                    f"insufficient memory headroom to evacuate {source}: {shortfall} "
@@ -883,7 +1213,7 @@ async def _run_job(job_id: int) -> None:
         async with db.connect() as c:
             cur = await c.execute(
                 "SELECT COUNT(*) AS c FROM host_upgrade_nodes "
-                "WHERE job_id = ? AND status IN ('queued','evacuating','updating',"
+                "WHERE job_id = ? AND status IN ('queued','preflight','evacuating','updating',"
                 "'awaiting_reboot','rebooting','restoring')",
                 (job_id,),
             )
@@ -950,9 +1280,55 @@ async def _run_single_host(cluster, job_id: int, n: dict,
     in_flight.add(source)
     stopped: list[dict] = []
     evac: list[dict] = []   # evacuation results (empty in in_place mode)
+    ha_maint = False        # did we put this node into HA maintenance mode?
     try:
-        # 1. evacuate guests — or, in_place, gracefully shut them down
-        await _set_node_status(node_id, "evacuating", started=True)
+        # 0. pre-flight — everything that can refuse this host while its
+        # workload is still where it belongs.
+        await _set_node_status(node_id, "preflight", started=True)
+        ok, why = await _preflight_host(cluster, source, node_id)
+        if not ok:
+            await _set_node_status(node_id, "failed", error=why, finished=True)
+            await _ev(node_id, "error", f"pre-flight failed: {why} — host untouched")
+            return
+
+        ha_svcs = await _ha_services_on(cluster, source)
+        if ha_svcs is None:
+            # We cannot see whether this node runs HA services. Proceeding
+            # would mean either migrating them by hand (fighting the HA
+            # manager) or rebooting a node with live HA services on it, and
+            # neither is a risk worth taking to save an operator one click.
+            why = ("cannot read HA status for this cluster — refusing to "
+                   "upgrade without knowing whether this node hosts HA-managed "
+                   "guests (check the API token has Sys.Audit)")
+            await _set_node_status(node_id, "failed", error=why, finished=True)
+            await _ev(node_id, "error", why)
+            return
+        conflict = _inplace_ha_conflict(ha_svcs, in_place, source)
+        if conflict:
+            await _set_node_status(node_id, "failed", error=conflict, finished=True)
+            await _ev(node_id, "error", conflict)
+            return
+
+        # 1a. HA-managed guests: PVE's own maintenance mode moves them out and
+        # remembers where they came from, so it also moves them back.
+        if ha_svcs:
+            await _ev(node_id, "info",
+                      f"ha: {len(ha_svcs)} managed service(s) on {source} — "
+                      f"entering HA maintenance mode")
+            if not await _ha_maintenance(cluster, source, True, node_id):
+                await _set_node_status(
+                    node_id, "failed",
+                    error="could not enable HA maintenance mode", finished=True)
+                return
+            ha_maint = True
+            if not await _wait_ha_drained(cluster, source, node_id, job_id):
+                await _set_node_status(
+                    node_id, "failed",
+                    error="HA services did not leave the node", finished=True)
+                return
+
+        # 1. evacuate the remaining (non-HA) guests — or, in_place, shut down
+        await _set_node_status(node_id, "evacuating")
         if in_place:
             stopped = await _shutdown_node_guests(cluster, source, node_id)
             await _patch_node_detail(node_id, {"stopped": stopped})
@@ -969,7 +1345,9 @@ async def _run_single_host(cluster, job_id: int, n: dict,
                     await _start_node_guests(cluster, source, ok_stopped, node_id)
                 return
         else:
-            evac = await _evacuate_node(cluster, source, targets, node_id, committed_mem)
+            evac = await _evacuate_node(
+                cluster, source, targets, node_id, committed_mem,
+                exclude_vmids={s['vmid'] for s in ha_svcs})
             await _patch_node_detail(node_id, {"evacuated": evac})
             if any(not e.get("ok") for e in evac):
                 await _set_node_status(node_id, "failed",
@@ -1048,6 +1426,23 @@ async def _run_single_host(cluster, job_id: int, n: dict,
                 await _ceph_set_noout(cluster, False, node_id)
                 noout_active = False
 
+        # 5a. Leave HA maintenance mode. The HA manager recorded where each of
+        # its services came from and moves them back on its own.
+        #
+        # This happens even when migrate_back is off. `migrate_back` governs OUR
+        # bookkeeping for non-HA guests; HA services return as an inherent part
+        # of leaving maintenance, and the only way to stop that would be to
+        # leave the node in maintenance permanently — hidden cluster state that
+        # silently bars it from ever hosting an HA service again. Say so rather
+        # than do that.
+        if ha_maint:
+            if not migrate_back:
+                await _ev(node_id, "info",
+                          "ha: migrate-back is off, but HA-managed guests return "
+                          "automatically when maintenance mode is lifted")
+            if await _ha_maintenance(cluster, source, False, node_id):
+                ha_maint = False
+
         # 5. bring guests back: restart in place, or migrate back (migrate mode)
         if in_place:
             # Always restart the guests we stopped, whether the admin rebooted
@@ -1097,6 +1492,17 @@ async def _run_single_host(cluster, job_id: int, n: dict,
         # the node was down), clear it so we never leave the cluster pinned.
         if noout_active:
             await _ceph_set_noout(cluster, False, node_id)
+        # Same for HA maintenance. A node left in maintenance is quietly barred
+        # from hosting HA services for good, and the operator has no reason to
+        # suspect it. If we cannot clear it (the node never came back), say
+        # exactly which command clears it by hand rather than leaving a state
+        # nobody knows about.
+        if ha_maint:
+            if not await _ha_maintenance(cluster, source, False, node_id):
+                await _ev(node_id, "error",
+                          f"{source} is STILL in HA maintenance mode and will not "
+                          f"host HA services until you run: "
+                          f"ha-manager crm-command node-maintenance disable {source}")
 
 
 # ─────────────────────────────────────────────────────── REST endpoints
@@ -1262,6 +1668,24 @@ async def start_job(request: web.Request) -> web.Response:
     if out["status"] != "pending":
         return web.json_response({"error": "wrong_state",
                                    "status": out["status"]}, status=409)
+    # One rolling sweep per cluster. Each job keeps its own `in_flight` set, so
+    # two jobs started against the same cluster would happily evacuate two nodes
+    # at once — overcommitting the survivors (each plans against a pool the
+    # other is also spending) and, on a small cluster, risking quorum. The
+    # per-job set cannot see across jobs; this check can.
+    async with db.connect() as c:
+        cur = await c.execute(
+            "SELECT id FROM host_upgrade_jobs "
+            "WHERE cluster_id = ? AND status = 'running' AND id != ? LIMIT 1",
+            (out["cluster_id"], job_id),
+        )
+        busy = await cur.fetchone()
+    if busy:
+        return web.json_response(
+            {"error": "cluster_busy", "running_job_id": busy["id"],
+             "message": (f"upgrade job {busy['id']} is already running on cluster "
+                         f"{out['cluster_id']}; finish or abort it first")},
+            status=409)
     actor, ip, rid = _audit_meta(request)
     await audit.write(
         user=actor, source_ip=ip, action="host_upgrade.start",

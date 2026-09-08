@@ -9,20 +9,34 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # README advertises "python 3.10+", so BOTH ends of that claim get
+        # tested. This job ran only 3.10 while the code was developed against
+        # 3.12, which is how behaviour that differs between them (3.12 changed
+        # asyncio.Server.wait_closed to actually wait) stayed invisible in both
+        # directions. If the 3.10 leg cannot be made green, the badge is the
+        # thing that has to change -- install.sh targets Ubuntu 22.04, which
+        # ships 3.10.
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # Test tooling is PINNED. Unpinned, a new pytest-asyncio major lands and
+      # three already-tagged releases go red without a line of code changing --
+      # which is exactly what the run history shows.
       - name: Install runtime + test deps
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements.txt
-          python3 -m pip install pytest pytest-asyncio pytest-aiohttp
+          python3 -m pip install "pytest>=8,<10" "pytest-asyncio>=1.0,<2" "pytest-aiohttp>=1.1,<2"
 
       - name: Verify install.sh syntax
         run: bash -n install.sh
@@ -32,6 +46,30 @@ jobs:
 
       - name: pytest
         run: python3 -m pytest tests/ -q
+
+  # The frontend was never built in CI, so a TypeScript error could reach main
+  # and only surface when someone ran a release build by hand.
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install (locked)
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Production build
+        run: npm run build
+
+      - name: Dependency audit (production only)
+        run: npm audit --omit=dev --audit-level=high
 
   audit:
     runs-on: ubuntu-22.04
@@ -57,5 +95,10 @@ jobs:
           # AWS / GitHub PATs
           if grep -rIE 'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}' .; then
             echo "::error::looks like an API key / PAT was committed"; exit 1
+          fi
+          # CORS wildcard combined with credentials — the A05 regression the
+          # local scanner was blind to for thirty releases.
+          if grep -rnE 'defaults\s*=\s*\{\s*["'"'"']\*["'"'"']\s*:' server/ 2>/dev/null; then
+            echo "::error::wildcard CORS origin"; exit 1
           fi
           echo "✓ static checks pass"

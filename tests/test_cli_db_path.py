@@ -73,6 +73,13 @@ def test_env_var_still_wins_over_config(tmp_path):
 def test_unreadable_config_falls_back_without_crashing(tmp_path):
     """A missing/corrupt config must not take the recovery tool down with it."""
     cfg = tmp_path / "nope.yaml"          # never created
-    r = _run(["user", "list"], cfg)
+    # Point the DB somewhere disposable. _run() pops $JTPROXENSE_DB_PATH so that
+    # the other two tests can assert the config/env precedence, which left this
+    # one falling through to the REAL default, /var/lib/jt-proxense/jt-proxense.db
+    # -- i.e. the operator's live database on any host that has one. The
+    # behaviour under test is "a missing config does not crash the recovery
+    # tool", and that is exercised just as well against a temp path.
+    r = _run(["user", "list"], cfg,
+             {"JTPROXENSE_DB_PATH": str(tmp_path / "fallback.db")})
     # It may find no users, but it must not traceback.
     assert "Traceback" not in (r.stderr or "")
