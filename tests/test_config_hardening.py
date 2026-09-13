@@ -120,3 +120,47 @@ def test_wildcard_cors_origin_is_ignored(tmp_path, monkeypatch):
     usable = [o for o in c.server.cors_origins
               if isinstance(o, str) and o.strip() and o.strip() != "*"]
     assert usable == []
+
+# ------------------------------------------------- unknown keys are not corruption
+
+@pytest.mark.parametrize("body,where", [
+    ('server:\n  host: "0.0.0.0"\n  legacy_option: true\nclusters: []\n', "server"),
+    ('auth:\n  enabled: true\n  old_setting: x\nclusters: []\n', "auth"),
+    ('auth:\n  enabled: true\n  forward: {enabled: true, gone: 1}\nclusters: []\n',
+     "auth.forward"),
+    ('clusters:\n- id: c1\n  nodes: [{host: "10.0.0.1", legacy: 2}]\n', "node"),
+    ('ui:\n  bogus: 1\nalerts:\n  nope: 2\nclusters: []\n', "ui/alerts"),
+    ('clusters:\n- id: c1\n  nodes: []\n  auth: {user: "u@pve", stale: 1}\n', "cluster auth"),
+])
+def test_unrecognised_settings_do_not_stop_the_service(cfg_file, body, where):
+    """An unknown key is a config from another version, a hand edit or a typo --
+    not a corrupt file. Refusing to start on one turns an upgrade into an
+    outage, and the message is about a keyword argument. They are dropped with
+    a warning instead; genuinely broken YAML still refuses (above)."""
+    cfg_file.write_text(body, encoding="utf-8")
+    c = cfg_mod.load_config()
+    assert c is not None, f"{where}: an unknown key stopped the service"
+
+
+def test_auth_stays_on_when_an_unknown_key_is_present(cfg_file):
+    """The whole point. Dropping to defaults would set auth.enabled False and
+    bind 0.0.0.0; so would refusing to start and being 'fixed' by deleting the
+    file. The setting must survive."""
+    cfg_file.write_text(
+        'auth:\n  enabled: true\n  backend: local\n  unknown_thing: 1\n'
+        'server:\n  host: "127.0.0.1"\nclusters: []\n', encoding="utf-8")
+    c = cfg_mod.load_config()
+    assert c.auth.enabled is True
+    assert c.auth.backend == "local"
+    assert c.server.host == "127.0.0.1"
+
+
+def test_unknown_keys_are_reported(cfg_file, caplog):
+    """Silently dropping settings is its own failure mode -- the operator must
+    be able to find out why their option does nothing."""
+    import logging
+    cfg_file.write_text('server:\n  host: "0.0.0.0"\n  typo_here: 1\nclusters: []\n',
+                        encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger=cfg_mod.logger.name):
+        cfg_mod.load_config()
+    assert any("typo_here" in r.getMessage() for r in caplog.records)

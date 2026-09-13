@@ -9,7 +9,7 @@ import os
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from datetime import datetime
 from typing import Optional
 import yaml
@@ -44,6 +44,27 @@ def _ensure_secure_mode(path: str) -> None:
             "could not secure %s (%s) -- it may hold PVE API tokens readable "
             "by other users on this host; fix with: chmod 600 %s",
             path, e, path)
+
+
+def _from_fields(cls, data: dict, *, where: str):
+    """Build a dataclass from `data`, ignoring keys it does not declare.
+
+    An unknown key is NOT a corrupt file -- it is a config written by another
+    version, or hand-edited, or a typo. Passing it straight to the constructor
+    raises TypeError, and load_config() is fail-closed, so a single stale line
+    would stop the service from starting at all. That is a worse failure than
+    the one fail-closed exists to prevent: the operator upgrades, the daemon
+    will not come up, and the message is about a keyword argument.
+
+    So: drop what we do not know, say so once per key, and carry on. Genuinely
+    unparseable YAML and a wrong top-level shape still refuse to start.
+    """
+    known = {f.name for f in dataclass_fields(cls)}
+    unknown = [k for k in data if k not in known]
+    if unknown:
+        logger.warning("%s: ignoring unrecognised setting(s): %s",
+                       where, ", ".join(sorted(unknown)))
+    return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -235,12 +256,16 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict) -> "Config":
         """Create config from dictionary"""
-        server = ServerConfig(**data.get("server", {}))
+        server = _from_fields(ServerConfig, data.get("server") or {}, where="server")
 
         clusters = []
         for c in data.get("clusters", []):
-            nodes = [PVENodeConfig(**n) for n in c.get("nodes", [])]
-            auth = PVEAuthConfig(**c.get("auth", {}))
+            cid_for_log = c.get("id", "?")
+            nodes = [_from_fields(PVENodeConfig, n or {},
+                                  where=f"clusters[{cid_for_log}].nodes")
+                     for n in c.get("nodes", [])]
+            auth = _from_fields(PVEAuthConfig, c.get("auth") or {},
+                                where=f"clusters[{cid_for_log}].auth")
             cluster = ClusterConfig(
                 id=c.get("id", ""),
                 name=c.get("name", ""),
@@ -258,13 +283,19 @@ class Config:
             )
             clusters.append(cluster)
 
-        alerts = AlertConfig(**data.get("alerts", {}))
-        ui = UIConfig(**data.get("ui", {}))
-        auth_data = dict(data.get("auth", {}))
+        alerts = _from_fields(AlertConfig, data.get("alerts") or {}, where="alerts")
+        ui = _from_fields(UIConfig, data.get("ui") or {}, where="ui")
+        auth_data = dict(data.get("auth") or {})
         forward_data = auth_data.pop("forward", {}) or {}
-        auth_cfg = AuthConfig(**auth_data, forward=AuditForwardConfig(**forward_data))
-        vm_control_cfg = VmControlConfig(**data.get("vm_control", {}))
-        console_cfg = ConsoleConfig(**data.get("console", {}))
+        auth_cfg = _from_fields(
+            AuthConfig, {**auth_data,
+                         "forward": _from_fields(AuditForwardConfig, forward_data,
+                                                 where="auth.forward")},
+            where="auth")
+        vm_control_cfg = _from_fields(VmControlConfig, data.get("vm_control") or {},
+                                      where="vm_control")
+        console_cfg = _from_fields(ConsoleConfig, data.get("console") or {},
+                                   where="console")
 
         return cls(server=server, clusters=clusters, alerts=alerts, ui=ui,
                    auth=auth_cfg, vm_control=vm_control_cfg, console=console_cfg)

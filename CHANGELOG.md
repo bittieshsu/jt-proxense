@@ -8,6 +8,40 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.1] — 2026-09-13
+
+### Fixed
+- **A config file carrying a setting this version does not recognise stopped the
+  service from starting.** v1.1.0 made `load_config()` fail closed, which is
+  right for a corrupt file — falling back to `Config()` means `auth.enabled:
+  false` and `host: 0.0.0.0`. But an *unrecognised key* is not corruption: it is
+  a file written by another version, a hand edit, or a typo. It reached the
+  dataclass constructor as an unexpected keyword argument, the exception was
+  caught by the new fail-closed path, and the daemon refused to start with a
+  message about a keyword argument. An upgrade must not turn one stale line into
+  an outage.
+
+  Unknown keys are now dropped with a warning naming each one, and the settings
+  around them — `auth.enabled` above all — are preserved. Genuinely unparseable
+  YAML and a wrong top-level shape still refuse to start, which is what the
+  fail-closed change was for.
+
+  **No released configuration is affected.** `save_config()` writes
+  `asdict()` of the current dataclasses, so a file the application wrote always
+  round-trips; verified against seven real configs spanning v0.7 to v1.0 from a
+  live install, every historical version of `config.example.yaml`, and every
+  field ever declared across the ten revisions of `server/config.py` — none has
+  ever been removed. The exposure was hand-edited files, and the cost of being
+  wrong about that was the daemon not coming up.
+
+### Docs
+- The v1.1.0 entry gains **Upgrade notes**: the reverse-proxy and CORS changes
+  need action from some operators before they upgrade, and the consequence of
+  skipping the first one was understated. If your proxy is not on the same host
+  and is not in `auth.trusted_proxies`, every client now shares the proxy's
+  address for rate-limiting — five failed logins from anyone lock everyone out
+  for fifteen minutes.
+
 ## [1.1.0] — 2026-09-09
 
 An external review of v1.0.1 found a set of defaults and boundaries that were
@@ -16,6 +50,28 @@ before being changed, and each fix ships with a test that was verified to fail
 without it.
 
 Three of these change behaviour on upgrade; they are called out inline.
+
+### Upgrade notes
+
+Three of the changes above alter behaviour on an existing install. Re-running
+the installer is what applies the file-permission and ownership repairs; a bare
+`git pull` leaves the old systemd unit in place and fixes nothing.
+
+- **If your reverse proxy is NOT on the same host**, add it to
+  `auth.trusted_proxies` before upgrading. Otherwise every request now carries
+  the proxy's address instead of the real client's: the audit log records the
+  proxy as the source of every action, and — more sharply — the per-IP login
+  lockout counts all users as one IP, so five failed logins from anyone lock
+  everyone out for fifteen minutes. `jt-proxense unlock --all` clears a lockout
+  if you hit it. An ignored `X-Forwarded-For` is logged once per peer, so the
+  journal will tell you this is happening.
+- **If you serve the UI from a different origin**, set `server.cors_origins` to
+  that origin. Cross-origin access is closed by default now, and a `*` entry is
+  ignored.
+- **Nothing else needs a config change.** Settings your file already carries are
+  preserved, and a key this version does not recognise is dropped with a warning
+  rather than being treated as a corrupt file — an upgrade must not turn one
+  stale line into a service that will not start.
 
 ### Security
 
