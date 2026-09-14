@@ -8,6 +8,50 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.2] — 2026-09-14
+
+### Added
+- **An install &amp; upgrade troubleshooting page**, in English and Traditional
+  Chinese, with a clickable contents list and a search box that filters the
+  entries as you type: <https://jasoncheng7115.github.io/jt-proxense/troubleshooting.html>
+
+  Twenty-five entries, every one of them a failure that really exists — each
+  `die` in `install.sh`, the problems recorded in this changelog (PEP 668, the
+  undeclared `six` dependency), and the behaviour v1.1.0 deliberately changed.
+  The most-asked one is first among the upgrade entries: **a bare `git pull` is
+  not an upgrade**, because it does not reinstall the systemd unit, refresh the
+  Python dependencies, or apply the ownership and permission repairs.
+
+- **`install.sh` now prints that URL whenever it fails**, and picks the reader's
+  language from the machine's locale: a Chinese system gets the Chinese page,
+  everything else gets English (`LC_ALL`, then `LC_MESSAGES`, then `LANG`, the
+  order the C library uses). An error that names no next step is where an
+  evaluation stops.
+
+### Fixed
+- **The site had never loaded its own fonts.** `style.css` has imported
+  `fonts/fonts.css` since the landing site shipped, and that file was never in
+  the repository — it 404'd, so every page fell back to `system-ui` while the
+  vendored `.woff2` files sat beside it unused. Worse, all five **Rajdhani**
+  files — the body face of the whole site — were Google 404 error pages saved
+  with a `.woff2` extension: a download that failed silently and was committed
+  as if it had worked.
+
+  Both are repaired from the application's own `dist/fonts/`, which has correct
+  copies, so nothing was fetched from the network. `tests/test_troubleshooting_page.py`
+  now asserts every vendored font actually begins with the `wOF2` magic bytes,
+  and that the imported stylesheet exists.
+
+- **`section { padding: 80px 0 }` in the shared stylesheet** applied to the new
+  page's groups, putting 80px above and below each one — a single-entry section
+  rendered as a 212px hole. Reset explicitly rather than renaming the element.
+
+### Docs
+- `JT_PROXENSE_REF` is now documented in the installer's own header; it was
+  added in v1.1.0 without updating the usage block above it.
+- The landing pages link to the troubleshooting page in their navigation and
+  footer, each to its own language.
+
 ## [1.1.1] — 2026-09-13
 
 ### Fixed

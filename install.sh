@@ -7,7 +7,9 @@
 #
 # Environment overrides (for testing):
 #   JT_PROXENSE_REPO_URL  — git URL to clone from (default: GitHub repo)
-#   JT_PROXENSE_BRANCH    — branch / tag / SHA to check out (default: main)
+#   JT_PROXENSE_REF       — branch / tag / SHA to install
+#                           (default: the newest vX.Y.Z release tag)
+#   JT_PROXENSE_BRANCH    — branch used only when the repo has no tags yet
 #   JT_PROXENSE_INSTALL_DIR — target directory (default: /opt/jt-proxense)
 #   JT_PROXENSE_USER      — service user (default: jt-proxense)
 #   JT_PROXENSE_PORT      — HTTP port written into config.yaml (default: 8098)
@@ -19,7 +21,28 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC
 say()  { printf "%b%s%b\n" "$CYAN" "$*" "$NC"; }
 ok()   { printf "%b  ✓ %s%b\n" "$GREEN" "$*" "$NC"; }
 warn() { printf "%b  ! %s%b\n" "$YELLOW" "$*" "$NC"; }
-die()  { printf "%b  ✗ %s%b\n" "$RED" "$*" "$NC" >&2; exit 1; }
+die()  { printf "%b  ✗ %s%b\n" "$RED" "$*" "$NC" >&2; help_line; exit 1; }
+
+# ---------- where to send someone when this goes wrong ----------
+# Picked from the machine's locale: a Chinese system gets the Chinese page,
+# everything else gets English. Checked in the order the C library resolves
+# them (LC_ALL wins, then LC_MESSAGES, then LANG).
+DOCS_BASE="https://jasoncheng7115.github.io/jt-proxense"
+help_url() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+        zh_*|zh-*|zh|*[._]Hant*|*[._]Hans*)
+            printf '%s/troubleshooting.zh-tw.html' "$DOCS_BASE" ;;
+        *)  printf '%s/troubleshooting.html' "$DOCS_BASE" ;;
+    esac
+}
+help_line() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+        zh_*|zh-*|zh|*[._]Hant*|*[._]Hans*)
+            printf "%b  → 安裝與升級疑難排解：%s%b\n" "$CYAN" "$(help_url)" "$NC" >&2 ;;
+        *)  printf "%b  → Install & upgrade troubleshooting: %s%b\n" "$CYAN" "$(help_url)" "$NC" >&2 ;;
+    esac
+}
+
 
 # ---------- config ----------
 REPO_URL="${JT_PROXENSE_REPO_URL:-https://github.com/jasoncheng7115/jt-proxense.git}"
@@ -390,6 +413,7 @@ if ask_yes_no "Start ${SERVICE_NAME} service now?" y; then
         ok "service is running"
     else
         warn "service failed to start — check: journalctl -u ${SERVICE_NAME} -n 50"
+        help_line
         START_NOW=0
     fi
 else

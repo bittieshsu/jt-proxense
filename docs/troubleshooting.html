@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install &amp; upgrade troubleshooting — JT-PROXENSE</title>
+<meta name="description" content="What to do when the installer stops, an upgrade does not take, or the service will not come back up. Search the exact error text — every entry here is a failure path that really exists in the installer or that a release actually changed.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="alternate" hreflang="en" href="troubleshooting.html">
+<link rel="alternate" hreflang="zh-Hant-TW" href="troubleshooting.zh-tw.html">
+<link rel="stylesheet" href="style.css">
+<style>
+/* ---- page-local: Q&A layout. Tokens come from style.css ---- */
+/* style.css has no .sr-only; the search field needs a label that is announced
+   but not drawn, so it is defined here rather than in the shared sheet. */
+.sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.ts-wrap { max-width: var(--container); margin: 0 auto; padding: 0 24px 96px; }
+.ts-head { padding: 56px 0 28px; border-bottom: 1px solid var(--border); }
+.ts-head h1 { font-family: var(--font-display); font-size: clamp(26px, 4vw, 40px);
+               margin: 0 0 12px; letter-spacing: .02em; }
+.ts-lede { color: var(--text-dim); max-width: 68ch; margin: 0; line-height: 1.65; }
+
+.ts-search { position: relative; margin: 26px 0 0; max-width: 640px; }
+.ts-search input {
+    width: 100%; padding: 13px 92px 13px 42px; font: inherit; font-size: 16px;
+    color: var(--text); background: var(--bg-elev);
+    border: 1px solid var(--border-strong); border-radius: var(--radius);
+    outline: none; transition: box-shadow .15s, border-color .15s;
+}
+.ts-search input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-soft); }
+.ts-search svg { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+                  width: 18px; height: 18px; stroke: var(--text-muted); fill: none; }
+.ts-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+             background: none; border: 1px solid var(--border); color: var(--text-muted);
+             font: inherit; font-size: 13px; padding: 5px 10px; border-radius: var(--radius-sm);
+             cursor: pointer; display: none; }
+.ts-clear:hover { color: var(--text); border-color: var(--border-strong); }
+.ts-count { margin: 10px 2px 0; font-size: 14px; color: var(--text-muted); min-height: 20px; }
+
+.ts-body { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 48px;
+            align-items: start; margin-top: 36px; }
+@media (max-width: 880px) { .ts-body { grid-template-columns: 1fr; gap: 28px; } }
+
+.ts-toc { position: sticky; top: 88px; font-size: 14.5px; }
+@media (max-width: 880px) {
+    .ts-toc { position: static; border: 1px solid var(--border);
+               border-radius: var(--radius); padding: 16px 18px; background: var(--bg-elev); }
+}
+.ts-toc h2 { font-family: var(--font-display); font-size: 12px; letter-spacing: .18em;
+              text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px; }
+.ts-toc ol { list-style: none; margin: 0 0 20px; padding: 0; }
+.ts-toc > ol > li + li { margin-top: 18px; }
+.ts-toc .ts-toc-sec { display: block; font-weight: 600; color: var(--text);
+                       margin-bottom: 7px; font-size: 14px; }
+.ts-toc ol ol { margin: 0; border-left: 1px solid var(--border); }
+.ts-toc ol ol a { display: block; padding: 5px 0 5px 13px; margin-left: -1px;
+                   border-left: 2px solid transparent; color: var(--text-dim);
+                   text-decoration: none; line-height: 1.45; }
+.ts-toc ol ol a:hover { color: var(--cyan); border-left-color: var(--cyan-soft); }
+.ts-toc ol ol a.is-current { color: var(--cyan); border-left-color: var(--cyan); }
+.ts-toc li.is-hidden { display: none; }
+
+/* style.css gives every <section> `padding: 80px 0` for the landing page's
+   band layout. Inherited here it put 80px above and below EVERY group, so a
+   one-entry section rendered as a 212px hole. Reset it explicitly rather than
+   renaming the element (CLAUDE.md recurring mistake #2, element-selector
+   flavour). */
+.ts-sec { margin: 0 0 12px; padding: 0; scroll-margin-top: 84px; }
+.ts-sec > h2 { font-family: var(--font-display); font-size: 13px; letter-spacing: .16em;
+                text-transform: uppercase; color: var(--cyan); margin: 40px 0 4px;
+                padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.ts-sec:first-of-type > h2 { margin-top: 0; }
+
+.qa { border-bottom: 1px solid var(--border); scroll-margin-top: 84px; }
+.qa[hidden] { display: none; }
+.qa > summary { list-style: none; cursor: pointer; padding: 18px 34px 18px 0;
+                 position: relative; font-size: 17px; font-weight: 600; color: var(--text);
+                 line-height: 1.5; }
+.qa > summary::-webkit-details-marker { display: none; }
+.qa > summary:hover { color: var(--cyan); }
+.qa > summary::after {
+    content: ""; position: absolute; right: 6px; top: 25px; width: 9px; height: 9px;
+    border-right: 2px solid var(--text-muted); border-bottom: 2px solid var(--text-muted);
+    transform: rotate(45deg); transition: transform .18s;
+}
+.qa[open] > summary::after { transform: rotate(-135deg); }
+.qa[open] > summary { color: var(--cyan); }
+.qa-a { padding: 0 0 22px; color: var(--text-dim); line-height: 1.7; max-width: 76ch; }
+.qa-a p { margin: 0 0 14px; }
+.qa-a a { color: var(--cyan); }
+.qa-a strong { color: var(--text); }
+.qa-a code { font-family: var(--font-mono); font-size: .92em; color: var(--text);
+              background: var(--bg-elev-2); padding: 2px 6px; border-radius: 4px; }
+.qa-a kbd { font-family: var(--font-mono); font-size: .85em; color: var(--text);
+             background: var(--bg-elev-2); border: 1px solid var(--border);
+             border-bottom-width: 2px; padding: 2px 6px; border-radius: 4px; }
+.qa-a pre { background: var(--bg-elev); border: 1px solid var(--border);
+             border-radius: var(--radius); padding: 14px 16px; overflow-x: auto;
+             margin: 0 0 16px; }
+.qa-a pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6;
+                  color: var(--text); white-space: pre; }
+
+.ts-empty { display: none; padding: 34px 0; color: var(--text-dim); }
+.ts-empty a { color: var(--cyan); }
+mark { background: var(--cyan-soft); color: var(--text); border-radius: 3px; padding: 0 2px; }
+</style>
+</head>
+<body>
+
+<header class="nav">
+    <div class="container nav-inner">
+        <a href="index.html" class="nav-brand">
+            <img src="logo-mark.svg" alt="">
+            JT-PROXENSE
+            <span class="ver">v1.1.2</span>
+        </a>
+        <nav class="nav-links">
+            <a href="index.html">Home</a>
+            <a href="https://github.com/jasoncheng7115/jt-proxense" target="_blank" rel="noopener">GitHub</a>
+            <a href="troubleshooting.zh-tw.html" class="nav-lang">繁體中文</a>
+        </nav>
+    </div>
+</header>
+
+<main class="ts-wrap">
+    <div class="ts-head">
+        <h1>Install &amp; upgrade troubleshooting</h1>
+        <p class="ts-lede">What to do when the installer stops, an upgrade does not take, or the service will not come back up. Search the exact error text — every entry here is a failure path that really exists in the installer or that a release actually changed.</p>
+
+        <form class="ts-search" role="search" onsubmit="return false">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+            </svg>
+            <label class="sr-only" for="ts-q">Search</label>
+            <input id="ts-q" type="search" placeholder="Search the error message, e.g. “Refusing to overwrite”"
+                   autocomplete="off" spellcheck="false">
+            <button type="button" class="ts-clear" id="ts-clear">Clear</button>
+        </form>
+        <p class="ts-count" id="ts-count"></p>
+    </div>
+
+    <div class="ts-body">
+        <aside class="ts-toc" aria-label="Contents">
+            <h2>Contents</h2>
+            <ol><li><a class="ts-toc-sec" href="#sec-first">Start here</a><ol><li><a href="#read-error">The installer stopped. Where do I look?</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-install">Install fails</a><ol><li><a href="#root">This installer must run as root</a></li><li><a href="#no-pm">No supported package manager (apt / dnf / yum / pacman / zypper) found</a></li><li><a href="#python">Python 3.10+ required (found ...)</a></li><li><a href="#not-a-checkout">/opt/jt-proxense is non-empty but not a git checkout. Refusing to overwrite.</a></li><li><a href="#smoke">Smoke test failed — a runtime module did not import</a></li><li><a href="#network">git clone or curl fails / the host cannot reach GitHub</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-upgrade">Upgrade fails</a><ol><li><a href="#how-to-upgrade">How do I upgrade? Is git pull enough?</a></li><li><a href="#pin-version">Which version does the installer put on? Can I pin one?</a></li><li><a href="#local-changes">Your local changes would be overwritten / dubious ownership</a></li><li><a href="#still-old">It says it upgraded, but the UI still shows the old version</a></li><li><a href="#rollback">How do I roll back to the previous version?</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-service">The service will not start</a><ol><li><a href="#config-parse">REFUSING TO START: config.yaml could not be parsed</a></li><li><a href="#systemd-path">systemd: Failed to start / Unit ... failed with a ReadWritePaths error</a></li><li><a href="#port">Address already in use / port 8098 is taken</a></li><li><a href="#unstyled">The page loads but has no styling, or the layout is flat</a></li><li><a href="#cannot-save">Adding a cluster from the UI fails to save</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-signin">Cannot sign in</a><ol><li><a href="#locked">Too many attempts, please try again later</a></li><li><a href="#forgot">Forgot the admin password, or lost the authenticator</a></li><li><a href="#shut-out">Completely locked out after an auth misconfiguration</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-after-110">After upgrading to v1.1.0 or later</a><ol><li><a href="#xff">Everyone gets locked out after a few failed logins</a></li><li><a href="#cors">The UI stops working when served from another origin</a></li><li><a href="#ignored-setting">The log says: ignoring unrecognised setting(s)</a></li><li><a href="#rbac">A user with a per-cluster role was refused before, and works now</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-stuck">Still stuck</a><ol><li><a href="#report">Nothing here matches. How do I report it?</a></li></ol></li></ol>
+        </aside>
+
+        <div id="ts-content">
+            <section class="ts-sec" id="sec-first">
+                <h2>Start here</h2>
+            <details class="qa" id="read-error">
+                <summary>The installer stopped. Where do I look?</summary>
+                <div class="qa-a"><p>The installer prints a red <code>✗</code> line naming what failed. That line
+   is the thing to search for on this page.</p>
+   <p>If the install finished but the service is unhealthy, the service's own log is
+   the next place:</p>
+   <pre><code>sudo journalctl -u jt-proxense -n 50 --no-pager</code></pre>
+   <p>Check which version is actually installed:</p>
+   <pre><code>jt-proxense version</code></pre></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-install">
+                <h2>Install fails</h2>
+            <details class="qa" id="root">
+                <summary>This installer must run as root</summary>
+                <div class="qa-a"><p>The one-liner needs <code>sudo</code>. It creates a system user, writes a
+   systemd unit and installs into <code>/opt</code>.</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>Note the <code>sudo</code> goes on <code>bash</code>, not on <code>curl</code>.</p></div>
+            </details>
+            <details class="qa" id="no-pm">
+                <summary>No supported package manager (apt / dnf / yum / pacman / zypper) found</summary>
+                <div class="qa-a"><p>The installer resolves system packages through one of those five. On a
+   distribution it does not recognise, install the prerequisites by hand and then
+   re-run it — it skips what is already present:</p>
+   <pre><code>git, python3 (3.10+), python3-pip, python3-venv, systemd</code></pre></div>
+            </details>
+            <details class="qa" id="python">
+                <summary>Python 3.10+ required (found ...)</summary>
+                <div class="qa-a"><p>Most common on RHEL / Rocky / AlmaLinux 8, which ship Python 3.6 as
+   <code>python3</code>:</p>
+   <pre><code>sudo dnf install python3.11 python3.11-pip
+curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>The installer picks the newest interpreter it finds and points the systemd unit
+   at it, so you do not need to change the system default.</p></div>
+            </details>
+            <details class="qa" id="not-a-checkout">
+                <summary>/opt/jt-proxense is non-empty but not a git checkout. Refusing to overwrite.</summary>
+                <div class="qa-a"><p>Something is already in the target directory that the installer did not put
+   there — an old manual copy, or an extracted archive. It refuses rather than
+   deleting your files.</p>
+   <p>Move it aside and re-run:</p>
+   <pre><code>sudo mv /opt/jt-proxense /opt/jt-proxense.old
+curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>Or install somewhere else:</p>
+   <pre><code>curl -fsSL … | sudo JT_PROXENSE_INSTALL_DIR=/opt/jtp bash</code></pre>
+   <p>Your data is <strong>not</strong> in that directory — users, audit log and
+   settings live in <code>/var/lib/jt-proxense</code> and <code>/etc/jt-proxense</code>,
+   and survive this.</p></div>
+            </details>
+            <details class="qa" id="smoke">
+                <summary>Smoke test failed — a runtime module did not import</summary>
+                <div class="qa-a"><p>Python dependencies installed but one of them will not load. See the exact
+   module name in the line above the failure, then:</p>
+   <pre><code>sudo python3 -m pip install --upgrade -r /opt/jt-proxense/requirements.txt
+sudo systemctl restart jt-proxense</code></pre>
+   <p>On Debian 12+ / Ubuntu 24.04 the base environment is marked externally managed
+   (PEP 668). The installer detects this and adds
+   <code>--break-system-packages</code> automatically; if you are installing by hand
+   you need the same flag.</p></div>
+            </details>
+            <details class="qa" id="network">
+                <summary>git clone or curl fails / the host cannot reach GitHub</summary>
+                <div class="qa-a"><p>The installer needs <code>github.com</code> and
+   <code>raw.githubusercontent.com</code>. Behind a proxy, export it for the
+   <em>whole</em> command — a proxy set only for your shell will not reach the
+   <code>sudo</code> environment:</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh \
+  | sudo https_proxy=http://proxy:3128 bash</code></pre>
+   <p>For a fully air-gapped host, clone the repository elsewhere, copy it to
+   <code>/opt/jt-proxense</code>, and run <code>install.sh</code> from inside it.</p></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-upgrade">
+                <h2>Upgrade fails</h2>
+            <details class="qa" id="how-to-upgrade">
+                <summary>How do I upgrade? Is git pull enough?</summary>
+                <div class="qa-a"><p>Re-run the same one-liner. It is idempotent and it <em>is</em> the upgrade
+   path:</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p><strong>A bare <code>git pull</code> is not enough.</strong> It fetches code but
+   does not reinstall the systemd unit, refresh Python dependencies, or apply the file
+   ownership and permission repairs — so you end up running new code under an old
+   unit. If you have already done that, just run the one-liner afterwards; it repairs
+   the rest.</p></div>
+            </details>
+            <details class="qa" id="pin-version">
+                <summary>Which version does the installer put on? Can I pin one?</summary>
+                <div class="qa-a"><p>Since v1.1.0 it installs the <strong>newest release tag</strong>, not the tip
+   of <code>main</code> — so the same command run on two different days gives the same
+   code, and there is something to roll back to.</p>
+   <p>Pin a specific release, or deliberately follow the development branch:</p>
+   <pre><code># a specific release
+curl -fsSL … | sudo JT_PROXENSE_REF=v1.1.0 bash
+
+# the development branch
+curl -fsSL … | sudo JT_PROXENSE_REF=main bash</code></pre></div>
+            </details>
+            <details class="qa" id="local-changes">
+                <summary>Your local changes would be overwritten / dubious ownership</summary>
+                <div class="qa-a"><p>The installer resets the checkout to the release it is installing, so edits
+   made inside <code>/opt/jt-proxense</code> are discarded by design. Keep changes in
+   <code>config.yaml</code>, which is never overwritten.</p>
+   <p>If git refuses with <em>detected dubious ownership</em>, it is because the
+   checkout is root-owned (deliberate since v1.1.0 — the service must not be able to
+   modify its own code). Run git as root, or let the installer do it:</p>
+   <pre><code>sudo git -C /opt/jt-proxense status</code></pre></div>
+            </details>
+            <details class="qa" id="still-old">
+                <summary>It says it upgraded, but the UI still shows the old version</summary>
+                <div class="qa-a"><p>Check what the server actually runs first:</p>
+   <pre><code>jt-proxense version
+sudo systemctl status jt-proxense --no-pager | head -5</code></pre>
+   <p>If that is the new version, your browser is holding the previous
+   <code>index.html</code>. The page detects a stale bundle and reloads itself, but a
+   hard refresh settles it immediately: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>
+   (<kbd>⌘</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> on macOS).</p></div>
+            </details>
+            <details class="qa" id="rollback">
+                <summary>How do I roll back to the previous version?</summary>
+                <div class="qa-a"><p>Install the earlier tag. Your database and settings are outside the install
+   directory and are not touched:</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh \
+  | sudo JT_PROXENSE_REF=v1.1.0 bash</code></pre>
+   <p>Database migrations are forward-only. Rolling back across a release that added
+   one is not supported — take a copy of
+   <code>/var/lib/jt-proxense/jt-proxense.db</code> before a major upgrade if you want
+   a way back.</p></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-service">
+                <h2>The service will not start</h2>
+            <details class="qa" id="config-parse">
+                <summary>REFUSING TO START: config.yaml could not be parsed</summary>
+                <div class="qa-a"><p>The file is not valid YAML. The daemon refuses rather than falling back to
+   defaults, because those defaults turn authentication <em>off</em> and bind every
+   interface — a broken file must never quietly open an instance up.</p>
+   <p>Restore the copy taken before the last change:</p>
+   <pre><code>ls -lt /opt/jt-proxense/config_backups/
+sudo cp /opt/jt-proxense/config_backups/config_YYYYMMDD_HHMMSS.yaml \
+        /opt/jt-proxense/config.yaml
+sudo chown jt-proxense:jt-proxense /opt/jt-proxense/config.yaml
+sudo chmod 600 /opt/jt-proxense/config.yaml
+sudo systemctl restart jt-proxense</code></pre>
+   <p>A setting this version does not recognise is <em>not</em> an error — since
+   v1.1.1 it is ignored with a warning naming the key, and everything around it is
+   kept.</p></div>
+            </details>
+            <details class="qa" id="systemd-path">
+                <summary>systemd: Failed to start / Unit ... failed with a ReadWritePaths error</summary>
+                <div class="qa-a"><p>Since v1.1.0 the unit names each writable path individually, and systemd
+   refuses to start a unit whose <code>ReadWritePaths</code> mentions something that
+   does not exist. Re-running the installer creates them:</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>The paths are <code>/opt/jt-proxense/config.yaml</code>,
+   <code>/opt/jt-proxense/config_backups</code>,
+   <code>/opt/jt-proxense/.ssh</code>, <code>/var/lib/jt-proxense</code> and
+   <code>/etc/jt-proxense</code>. This happens if the unit was updated by hand rather
+   than through the installer.</p></div>
+            </details>
+            <details class="qa" id="port">
+                <summary>Address already in use / port 8098 is taken</summary>
+                <div class="qa-a"><p>Find what holds it, then either stop that or move jt-proxense:</p>
+   <pre><code>sudo ss -tlnp | grep 8098</code></pre>
+   <p>To move it, edit <code>server.http_port</code> in
+   <code>/opt/jt-proxense/config.yaml</code> and restart. On a fresh install you can
+   set it up front:</p>
+   <pre><code>curl -fsSL … | sudo JT_PROXENSE_PORT=8099 bash</code></pre></div>
+            </details>
+            <details class="qa" id="unstyled">
+                <summary>The page loads but has no styling, or the layout is flat</summary>
+                <div class="qa-a"><p>The browser got the JavaScript but not the stylesheet, usually because the
+   files are not readable by the service account after a manual copy:</p>
+   <pre><code>sudo chmod 644 /opt/jt-proxense/dist/index.html \
+                /opt/jt-proxense/dist/assets/index-*.js \
+                /opt/jt-proxense/dist/assets/index-*.css
+sudo systemctl restart jt-proxense</code></pre>
+   <p>Re-running the installer fixes this too, and is the safer choice.</p></div>
+            </details>
+            <details class="qa" id="cannot-save">
+                <summary>Adding a cluster from the UI fails to save</summary>
+                <div class="qa-a"><p>The service writes <code>config.yaml</code> and takes a backup first, so both
+   must be writable by the service account. Editing the file with a root shell
+   redirect changes its owner:</p>
+   <pre><code>sudo chown jt-proxense:jt-proxense /opt/jt-proxense/config.yaml
+sudo chmod 600 /opt/jt-proxense/config.yaml
+sudo chown -R jt-proxense:jt-proxense /opt/jt-proxense/config_backups
+sudo systemctl restart jt-proxense</code></pre></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-signin">
+                <h2>Cannot sign in</h2>
+            <details class="qa" id="locked">
+                <summary>Too many attempts, please try again later</summary>
+                <div class="qa-a"><p>That IP hit the login rate limit: five failed attempts in five minutes. It
+   clears itself after the cool-down, or immediately:</p>
+   <pre><code>sudo jt-proxense unlock            # list what is locked
+sudo jt-proxense unlock --all      # clear every lockout</code></pre>
+   <p>This only clears the counter. It never changes a password.</p></div>
+            </details>
+            <details class="qa" id="forgot">
+                <summary>Forgot the admin password, or lost the authenticator</summary>
+                <div class="qa-a"><p>The CLI works without the service running — that is what it is for:</p>
+   <pre><code>sudo jt-proxense reset-password admin
+sudo jt-proxense user reset-totp admin</code></pre></div>
+            </details>
+            <details class="qa" id="shut-out">
+                <summary>Completely locked out after an auth misconfiguration</summary>
+                <div class="qa-a"><p>Turn authentication off, fix the configuration, turn it back on:</p>
+   <pre><code>sudo jt-proxense auth disable       # also binds to 127.0.0.1 only
+sudo systemctl restart jt-proxense</code></pre>
+   <p>Re-enable it with <code>sudo jt-proxense auth set-local</code>.</p></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-after-110">
+                <h2>After upgrading to v1.1.0 or later</h2>
+            <details class="qa" id="xff">
+                <summary>Everyone gets locked out after a few failed logins</summary>
+                <div class="qa-a"><p>The most likely upgrade surprise. <code>X-Forwarded-For</code> is now trusted
+   only from loopback or an address you name. If your reverse proxy runs on
+   <em>another</em> host, every request now carries the proxy's address, so all users
+   share one rate-limit bucket — five failed logins from anyone locks out everyone for
+   fifteen minutes. The audit log records the proxy as the source too.</p>
+   <p>Name the proxy in <code>/opt/jt-proxense/config.yaml</code>:</p>
+   <pre><code>auth:
+  trusted_proxies:
+    - 192.0.2.10        # or a CIDR: 192.0.2.0/24</code></pre>
+   <p>Then <code>sudo systemctl restart jt-proxense</code> and
+   <code>sudo jt-proxense unlock --all</code>. The log says
+   <em>ignoring X-Forwarded-For from …</em> once per peer while this is happening.</p></div>
+            </details>
+            <details class="qa" id="cors">
+                <summary>The UI stops working when served from another origin</summary>
+                <div class="qa-a"><p>Cross-origin access is closed by default from v1.1.0. If you serve the SPA
+   from a different host or port than the API, name that origin:</p>
+   <pre><code>server:
+  cors_origins:
+    - https://ui.example.net</code></pre>
+   <p>A <code>*</code> entry is ignored on purpose: a wildcard combined with
+   credentials lets any site your browser visits drive this API with your session.</p>
+   <p>If the UI and API are the same origin — the default, because the app serves its
+   own SPA — you need none of this.</p></div>
+            </details>
+            <details class="qa" id="ignored-setting">
+                <summary>The log says: ignoring unrecognised setting(s)</summary>
+                <div class="qa-a"><p>Informational. Your <code>config.yaml</code> contains a key this version does
+   not know — usually a typo, or an option from a different version. The key is
+   dropped and everything else is honoured; check the spelling against
+   <a href="https://github.com/jasoncheng7115/jt-proxense/blob/main/config.example.yaml">config.example.yaml</a>.</p>
+   <p>Before v1.1.1 this stopped the service from starting. If you are on v1.1.0 and
+   the daemon refuses to start over a keyword argument, upgrade.</p></div>
+            </details>
+            <details class="qa" id="rbac">
+                <summary>A user with a per-cluster role was refused before, and works now</summary>
+                <div class="qa-a"><p>Expected. Until v1.1.0 the role check read only the global (<code>*</code>)
+   grant, so <code>jt-proxense user grant bob cluster1 operator</code> was ignored at
+   the door. It is now honoured for endpoints under that cluster. Grants scoped to one
+   cluster still do not apply to user administration or global settings.</p>
+   <p>Review who has what:</p>
+   <pre><code>sudo jt-proxense user list</code></pre></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-stuck">
+                <h2>Still stuck</h2>
+            <details class="qa" id="report">
+                <summary>Nothing here matches. How do I report it?</summary>
+                <div class="qa-a"><p>Open an issue with enough to reproduce it:</p>
+   <pre><code>jt-proxense version
+cat /etc/os-release | head -2
+python3 -V
+sudo journalctl -u jt-proxense -n 100 --no-pager</code></pre>
+   <p>Redact PVE hostnames and API tokens before pasting. Never paste
+   <code>config.yaml</code> as-is — it contains credentials.</p>
+   <p><a href="https://github.com/jasoncheng7115/jt-proxense/issues">Open an issue on GitHub</a></p></div>
+            </details>
+            </section>
+            <p class="ts-empty" id="ts-empty">No entry matches that. Try fewer words, or <a href="https://github.com/jasoncheng7115/jt-proxense/issues">open an issue</a>.</p>
+        </div>
+    </div>
+</main>
+
+<script>
+(function () {
+  var input   = document.getElementById('ts-q');
+  var clear   = document.getElementById('ts-clear');
+  var count   = document.getElementById('ts-count');
+  var empty   = document.getElementById('ts-empty');
+  var items   = Array.prototype.slice.call(document.querySelectorAll('.qa'));
+  var secs    = Array.prototype.slice.call(document.querySelectorAll('.ts-sec'));
+  var tocSecs = Array.prototype.slice.call(document.querySelectorAll('.ts-toc > ol > li'));
+  var ONE = '%d entry', MANY = '%d entries';
+
+  // Pre-compute the haystack once: question + answer text, lower-cased.
+  items.forEach(function (el) { el.dataset.hay = (el.textContent || '').toLowerCase(); });
+
+  function say(n) {
+    count.textContent = n === items.length ? '' : (n === 1 ? ONE : MANY).replace('%d', n);
+  }
+
+  function apply(q) {
+    q = q.trim().toLowerCase();
+    clear.style.display = q ? 'block' : 'none';
+    var shown = 0;
+    items.forEach(function (el) {
+      var hit = !q || el.dataset.hay.indexOf(q) !== -1;
+      el.hidden = !hit;
+      if (hit) { shown++; if (q) el.open = true; }
+      var t = document.querySelector('.ts-toc a[href="#' + el.id + '"]');
+      if (t) t.parentNode.classList.toggle('is-hidden', !hit);
+    });
+    // A section with nothing left in it should not leave a stray heading behind.
+    secs.forEach(function (s) {
+      s.hidden = !s.querySelector('.qa:not([hidden])');
+    });
+    tocSecs.forEach(function (li) {
+      li.classList.toggle('is-hidden', !li.querySelector('li:not(.is-hidden)'));
+    });
+    empty.style.display = shown ? 'none' : 'block';
+    say(shown);
+  }
+
+  input.addEventListener('input', function () { apply(input.value); });
+  clear.addEventListener('click', function () { input.value = ''; apply(''); input.focus(); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { input.value = ''; apply(''); }
+  });
+  // "/" focuses search, the way documentation sites do.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '/' && document.activeElement !== input) { e.preventDefault(); input.focus(); }
+  });
+
+  // Deep link: /troubleshooting.html#smoke opens that entry.
+  function openHash() {
+    var id = location.hash.slice(1);
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (el && el.classList.contains('qa')) { el.open = true; el.scrollIntoView(); }
+  }
+  window.addEventListener('hashchange', openHash);
+  openHash();
+
+  // Mark the entry currently in view in the contents list.
+  if ('IntersectionObserver' in window) {
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        var a = document.querySelector('.ts-toc a[href="#' + en.target.id + '"]');
+        if (a) a.classList.toggle('is-current', en.isIntersecting);
+      });
+    }, { rootMargin: '-80px 0px -70% 0px' });
+    items.forEach(function (el) { obs.observe(el); });
+  }
+})();
+</script>
+
+<footer class="foot">
+    <div class="container">
+        <nav class="foot-links">
+            <a href="index.html">Home</a>
+            <a href="https://github.com/jasoncheng7115/jt-proxense" target="_blank" rel="noopener">GitHub</a>
+            <a href="troubleshooting.zh-tw.html">繁體中文</a>
+        </nav>
+    </div>
+</footer>
+</body>
+</html>

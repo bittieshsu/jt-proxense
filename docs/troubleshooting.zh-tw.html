@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>安裝與升級疑難排解 — JT-PROXENSE</title>
+<meta name="description" content="安裝程式中斷、升級沒生效，或服務起不來時該怎麼辦。直接搜尋錯誤訊息原文 —— 這裡的每一條都對應安裝程式裡真實存在的失敗路徑，或某個版本實際改變的行為。">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="alternate" hreflang="en" href="troubleshooting.html">
+<link rel="alternate" hreflang="zh-Hant-TW" href="troubleshooting.zh-tw.html">
+<link rel="stylesheet" href="style.css">
+<style>
+/* ---- page-local: Q&A layout. Tokens come from style.css ---- */
+/* style.css has no .sr-only; the search field needs a label that is announced
+   but not drawn, so it is defined here rather than in the shared sheet. */
+.sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.ts-wrap { max-width: var(--container); margin: 0 auto; padding: 0 24px 96px; }
+.ts-head { padding: 56px 0 28px; border-bottom: 1px solid var(--border); }
+.ts-head h1 { font-family: var(--font-display); font-size: clamp(26px, 4vw, 40px);
+               margin: 0 0 12px; letter-spacing: .02em; }
+.ts-lede { color: var(--text-dim); max-width: 68ch; margin: 0; line-height: 1.65; }
+
+.ts-search { position: relative; margin: 26px 0 0; max-width: 640px; }
+.ts-search input {
+    width: 100%; padding: 13px 92px 13px 42px; font: inherit; font-size: 16px;
+    color: var(--text); background: var(--bg-elev);
+    border: 1px solid var(--border-strong); border-radius: var(--radius);
+    outline: none; transition: box-shadow .15s, border-color .15s;
+}
+.ts-search input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-soft); }
+.ts-search svg { position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+                  width: 18px; height: 18px; stroke: var(--text-muted); fill: none; }
+.ts-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+             background: none; border: 1px solid var(--border); color: var(--text-muted);
+             font: inherit; font-size: 13px; padding: 5px 10px; border-radius: var(--radius-sm);
+             cursor: pointer; display: none; }
+.ts-clear:hover { color: var(--text); border-color: var(--border-strong); }
+.ts-count { margin: 10px 2px 0; font-size: 14px; color: var(--text-muted); min-height: 20px; }
+
+.ts-body { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 48px;
+            align-items: start; margin-top: 36px; }
+@media (max-width: 880px) { .ts-body { grid-template-columns: 1fr; gap: 28px; } }
+
+.ts-toc { position: sticky; top: 88px; font-size: 14.5px; }
+@media (max-width: 880px) {
+    .ts-toc { position: static; border: 1px solid var(--border);
+               border-radius: var(--radius); padding: 16px 18px; background: var(--bg-elev); }
+}
+.ts-toc h2 { font-family: var(--font-display); font-size: 12px; letter-spacing: .18em;
+              text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px; }
+.ts-toc ol { list-style: none; margin: 0 0 20px; padding: 0; }
+.ts-toc > ol > li + li { margin-top: 18px; }
+.ts-toc .ts-toc-sec { display: block; font-weight: 600; color: var(--text);
+                       margin-bottom: 7px; font-size: 14px; }
+.ts-toc ol ol { margin: 0; border-left: 1px solid var(--border); }
+.ts-toc ol ol a { display: block; padding: 5px 0 5px 13px; margin-left: -1px;
+                   border-left: 2px solid transparent; color: var(--text-dim);
+                   text-decoration: none; line-height: 1.45; }
+.ts-toc ol ol a:hover { color: var(--cyan); border-left-color: var(--cyan-soft); }
+.ts-toc ol ol a.is-current { color: var(--cyan); border-left-color: var(--cyan); }
+.ts-toc li.is-hidden { display: none; }
+
+/* style.css gives every <section> `padding: 80px 0` for the landing page's
+   band layout. Inherited here it put 80px above and below EVERY group, so a
+   one-entry section rendered as a 212px hole. Reset it explicitly rather than
+   renaming the element (CLAUDE.md recurring mistake #2, element-selector
+   flavour). */
+.ts-sec { margin: 0 0 12px; padding: 0; scroll-margin-top: 84px; }
+.ts-sec > h2 { font-family: var(--font-display); font-size: 13px; letter-spacing: .16em;
+                text-transform: uppercase; color: var(--cyan); margin: 40px 0 4px;
+                padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.ts-sec:first-of-type > h2 { margin-top: 0; }
+
+.qa { border-bottom: 1px solid var(--border); scroll-margin-top: 84px; }
+.qa[hidden] { display: none; }
+.qa > summary { list-style: none; cursor: pointer; padding: 18px 34px 18px 0;
+                 position: relative; font-size: 17px; font-weight: 600; color: var(--text);
+                 line-height: 1.5; }
+.qa > summary::-webkit-details-marker { display: none; }
+.qa > summary:hover { color: var(--cyan); }
+.qa > summary::after {
+    content: ""; position: absolute; right: 6px; top: 25px; width: 9px; height: 9px;
+    border-right: 2px solid var(--text-muted); border-bottom: 2px solid var(--text-muted);
+    transform: rotate(45deg); transition: transform .18s;
+}
+.qa[open] > summary::after { transform: rotate(-135deg); }
+.qa[open] > summary { color: var(--cyan); }
+.qa-a { padding: 0 0 22px; color: var(--text-dim); line-height: 1.7; max-width: 76ch; }
+.qa-a p { margin: 0 0 14px; }
+.qa-a a { color: var(--cyan); }
+.qa-a strong { color: var(--text); }
+.qa-a code { font-family: var(--font-mono); font-size: .92em; color: var(--text);
+              background: var(--bg-elev-2); padding: 2px 6px; border-radius: 4px; }
+.qa-a kbd { font-family: var(--font-mono); font-size: .85em; color: var(--text);
+             background: var(--bg-elev-2); border: 1px solid var(--border);
+             border-bottom-width: 2px; padding: 2px 6px; border-radius: 4px; }
+.qa-a pre { background: var(--bg-elev); border: 1px solid var(--border);
+             border-radius: var(--radius); padding: 14px 16px; overflow-x: auto;
+             margin: 0 0 16px; }
+.qa-a pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.6;
+                  color: var(--text); white-space: pre; }
+
+.ts-empty { display: none; padding: 34px 0; color: var(--text-dim); }
+.ts-empty a { color: var(--cyan); }
+mark { background: var(--cyan-soft); color: var(--text); border-radius: 3px; padding: 0 2px; }
+</style>
+</head>
+<body>
+
+<header class="nav">
+    <div class="container nav-inner">
+        <a href="index.zh-tw.html" class="nav-brand">
+            <img src="logo-mark.svg" alt="">
+            JT-PROXENSE
+            <span class="ver">v1.1.2</span>
+        </a>
+        <nav class="nav-links">
+            <a href="index.zh-tw.html">回首頁</a>
+            <a href="https://github.com/jasoncheng7115/jt-proxense" target="_blank" rel="noopener">GitHub</a>
+            <a href="troubleshooting.html" class="nav-lang">English</a>
+        </nav>
+    </div>
+</header>
+
+<main class="ts-wrap">
+    <div class="ts-head">
+        <h1>安裝與升級疑難排解</h1>
+        <p class="ts-lede">安裝程式中斷、升級沒生效，或服務起不來時該怎麼辦。直接搜尋錯誤訊息原文 —— 這裡的每一條都對應安裝程式裡真實存在的失敗路徑，或某個版本實際改變的行為。</p>
+
+        <form class="ts-search" role="search" onsubmit="return false">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+            </svg>
+            <label class="sr-only" for="ts-q">搜尋</label>
+            <input id="ts-q" type="search" placeholder="搜尋錯誤訊息，例如「Refusing to overwrite」"
+                   autocomplete="off" spellcheck="false">
+            <button type="button" class="ts-clear" id="ts-clear">清除</button>
+        </form>
+        <p class="ts-count" id="ts-count"></p>
+    </div>
+
+    <div class="ts-body">
+        <aside class="ts-toc" aria-label="目錄">
+            <h2>目錄</h2>
+            <ol><li><a class="ts-toc-sec" href="#sec-first">從這裡開始</a><ol><li><a href="#read-error">安裝程式中斷了，我該先看哪裡？</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-install">安裝失敗</a><ol><li><a href="#root">This installer must run as root</a></li><li><a href="#no-pm">No supported package manager (apt / dnf / yum / pacman / zypper) found</a></li><li><a href="#python">Python 3.10+ required (found ...)</a></li><li><a href="#not-a-checkout">/opt/jt-proxense is non-empty but not a git checkout. Refusing to overwrite.</a></li><li><a href="#smoke">Smoke test failed — a runtime module did not import</a></li><li><a href="#network">git clone 或 curl 失敗／主機連不到 GitHub</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-upgrade">升級失敗</a><ol><li><a href="#how-to-upgrade">要怎麼升級？git pull 就夠了嗎？</a></li><li><a href="#pin-version">安裝程式會裝哪一版？可以指定嗎？</a></li><li><a href="#local-changes">Your local changes would be overwritten／dubious ownership</a></li><li><a href="#still-old">它說升級完成了，但畫面還是舊版本</a></li><li><a href="#rollback">要怎麼回滾到前一個版本？</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-service">服務起不來</a><ol><li><a href="#config-parse">REFUSING TO START: config.yaml could not be parsed</a></li><li><a href="#systemd-path">systemd: Failed to start／unit 因 ReadWritePaths 失敗</a></li><li><a href="#port">Address already in use／連接埠 8098 被占用</a></li><li><a href="#unstyled">頁面載入了，但沒有樣式、版面整個擠成一直排</a></li><li><a href="#cannot-save">從介面新增叢集時存不起來</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-signin">無法登入</a><ol><li><a href="#locked">Too many attempts, please try again later</a></li><li><a href="#forgot">忘記 admin 密碼，或是驗證器裝置遺失</a></li><li><a href="#shut-out">驗證設定弄錯之後完全被關在外面</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-after-110">升級到 v1.1.0 之後</a><ol><li><a href="#xff">所有人在幾次登入失敗後一起被鎖住</a></li><li><a href="#cors">從其他來源提供的介面在升級後失效</a></li><li><a href="#ignored-setting">記錄裡出現 ignoring unrecognised setting(s)</a></li><li><a href="#rbac">先前被拒絕的「單一叢集角色」使用者，現在可以用了</a></li></ol></li><li><a class="ts-toc-sec" href="#sec-stuck">還是卡住</a><ol><li><a href="#report">這裡沒有符合的狀況，要怎麼回報？</a></li></ol></li></ol>
+        </aside>
+
+        <div id="ts-content">
+            <section class="ts-sec" id="sec-first">
+                <h2>從這裡開始</h2>
+            <details class="qa" id="read-error">
+                <summary>安裝程式中斷了，我該先看哪裡？</summary>
+                <div class="qa-a"><p>安裝程式會印出一行紅色的 <code>✗</code>，指出失敗的原因。用那一行的文字在本頁搜尋。</p>
+   <p>如果安裝完成但服務不正常，下一個要看的是服務自己的記錄：</p>
+   <pre><code>sudo journalctl -u jt-proxense -n 50 --no-pager</code></pre>
+   <p>確認實際裝上的版本：</p>
+   <pre><code>jt-proxense version</code></pre></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-install">
+                <h2>安裝失敗</h2>
+            <details class="qa" id="root">
+                <summary>This installer must run as root</summary>
+                <div class="qa-a"><p>一鍵安裝需要 <code>sudo</code>。它會建立系統帳號、寫入 systemd unit，並安裝到
+   <code>/opt</code> 底下。</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>注意 <code>sudo</code> 要加在 <code>bash</code> 上，不是加在 <code>curl</code> 上。</p></div>
+            </details>
+            <details class="qa" id="no-pm">
+                <summary>No supported package manager (apt / dnf / yum / pacman / zypper) found</summary>
+                <div class="qa-a"><p>安裝程式透過這五種其中之一來裝系統套件。如果你的發行版不在其中，請先手動裝好
+   前置需求再重跑一次 —— 已經存在的它會略過：</p>
+   <pre><code>git、python3 (3.10 以上)、python3-pip、python3-venv、systemd</code></pre></div>
+            </details>
+            <details class="qa" id="python">
+                <summary>Python 3.10+ required (found ...)</summary>
+                <div class="qa-a"><p>最常見於 RHEL／Rocky／AlmaLinux 8，它們的 <code>python3</code> 是 3.6：</p>
+   <pre><code>sudo dnf install python3.11 python3.11-pip
+curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>安裝程式會挑它找到的最新直譯器，並讓 systemd unit 指向它，所以你不需要改系統預設值。</p></div>
+            </details>
+            <details class="qa" id="not-a-checkout">
+                <summary>/opt/jt-proxense is non-empty but not a git checkout. Refusing to overwrite.</summary>
+                <div class="qa-a"><p>目標目錄裡已經有東西，而且不是安裝程式放的 —— 可能是舊的手動複本，或解壓縮出來的
+   檔案。它選擇拒絕，而不是刪掉你的檔案。</p>
+   <p>把它移開再重跑：</p>
+   <pre><code>sudo mv /opt/jt-proxense /opt/jt-proxense.old
+curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>或是裝到別的位置：</p>
+   <pre><code>curl -fsSL … | sudo JT_PROXENSE_INSTALL_DIR=/opt/jtp bash</code></pre>
+   <p>你的資料<strong>不在</strong>那個目錄裡 —— 使用者、稽核記錄與設定放在
+   <code>/var/lib/jt-proxense</code> 與 <code>/etc/jt-proxense</code>，不會受影響。</p></div>
+            </details>
+            <details class="qa" id="smoke">
+                <summary>Smoke test failed — a runtime module did not import</summary>
+                <div class="qa-a"><p>Python 相依套件裝好了，但其中一個載入不了。失敗訊息上一行會指出確切的模組名稱，
+   然後：</p>
+   <pre><code>sudo python3 -m pip install --upgrade -r /opt/jt-proxense/requirements.txt
+sudo systemctl restart jt-proxense</code></pre>
+   <p>在 Debian 12 以上／Ubuntu 24.04，系統的 Python 環境被標記為 externally managed
+   (PEP 668)。安裝程式會自動偵測並加上 <code>--break-system-packages</code>；如果你是
+   手動安裝，需要自己加同一個旗標。</p></div>
+            </details>
+            <details class="qa" id="network">
+                <summary>git clone 或 curl 失敗／主機連不到 GitHub</summary>
+                <div class="qa-a"><p>安裝程式需要連到 <code>github.com</code> 與
+   <code>raw.githubusercontent.com</code>。在 proxy 後面的話，要把它匯出給<strong>整條指令</strong>
+   —— 只設在你自己 shell 裡的 proxy 傳不進 <code>sudo</code> 的環境：</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh \
+  | sudo https_proxy=http://proxy:3128 bash</code></pre>
+   <p>完全離線的主機，請在別處 clone 下來，複製到 <code>/opt/jt-proxense</code>，
+   然後在裡面執行 <code>install.sh</code>。</p></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-upgrade">
+                <h2>升級失敗</h2>
+            <details class="qa" id="how-to-upgrade">
+                <summary>要怎麼升級？git pull 就夠了嗎？</summary>
+                <div class="qa-a"><p>重跑同一行安裝指令。它是冪等的，而且它<strong>就是</strong>升級路徑：</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p><strong>單純 <code>git pull</code> 不夠。</strong> 它只抓程式碼，不會重新安裝
+   systemd unit、不會更新 Python 相依套件，也不會套用檔案擁有者與權限的修復 ——
+   結果是新程式跑在舊的 unit 底下。如果你已經這樣做了，事後補跑一次一鍵指令即可，
+   其餘它會修好。</p></div>
+            </details>
+            <details class="qa" id="pin-version">
+                <summary>安裝程式會裝哪一版？可以指定嗎？</summary>
+                <div class="qa-a"><p>從 v1.1.0 起，它安裝的是<strong>最新的發行標籤</strong>，而不是 <code>main</code> 的頂端 ——
+   所以同一行指令在不同兩天執行會得到相同的程式，而且有東西可以回滾。</p>
+   <p>指定特定版本，或刻意追開發分支：</p>
+   <pre><code># 指定某一個發行版
+curl -fsSL … | sudo JT_PROXENSE_REF=v1.1.0 bash
+
+# 追開發分支
+curl -fsSL … | sudo JT_PROXENSE_REF=main bash</code></pre></div>
+            </details>
+            <details class="qa" id="local-changes">
+                <summary>Your local changes would be overwritten／dubious ownership</summary>
+                <div class="qa-a"><p>安裝程式會把 checkout 重設到它要安裝的那個版本，所以在
+   <code>/opt/jt-proxense</code> 裡面的修改是刻意被丟棄的。要保留的設定請放在
+   <code>config.yaml</code>，那個檔案永遠不會被覆寫。</p>
+   <p>如果 git 回報 <em>detected dubious ownership</em>，那是因為 checkout 屬於 root
+   （v1.1.0 起刻意如此 —— 服務不該能修改自己的程式碼）。用 root 執行 git，或交給安裝
+   程式處理：</p>
+   <pre><code>sudo git -C /opt/jt-proxense status</code></pre></div>
+            </details>
+            <details class="qa" id="still-old">
+                <summary>它說升級完成了，但畫面還是舊版本</summary>
+                <div class="qa-a"><p>先確認伺服器實際跑的是什麼：</p>
+   <pre><code>jt-proxense version
+sudo systemctl status jt-proxense --no-pager | head -5</code></pre>
+   <p>如果那已經是新版，就是瀏覽器還留著舊的 <code>index.html</code>。頁面會偵測到過期的
+   bundle 並自己重新載入，但強制重新整理可以立刻解決：
+   <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>
+   （macOS 是 <kbd>⌘</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>）。</p></div>
+            </details>
+            <details class="qa" id="rollback">
+                <summary>要怎麼回滾到前一個版本？</summary>
+                <div class="qa-a"><p>安裝先前的標籤即可。你的資料庫與設定在安裝目錄之外，不會被動到：</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh \
+  | sudo JT_PROXENSE_REF=v1.1.0 bash</code></pre>
+   <p>資料庫 migration 是單向的。跨過有新增 migration 的版本回滾並不支援 —— 如果你想保留
+   退路，請在重大升級前先複製一份
+   <code>/var/lib/jt-proxense/jt-proxense.db</code>。</p></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-service">
+                <h2>服務起不來</h2>
+            <details class="qa" id="config-parse">
+                <summary>REFUSING TO START: config.yaml could not be parsed</summary>
+                <div class="qa-a"><p>這個檔案不是合法的 YAML。daemon 選擇拒絕啟動，而不是退回預設值，因為那些預設值會
+   把驗證<strong>關掉</strong>並綁定所有介面 —— 一個壞掉的檔案絕對不該安靜地把執行個體打開。</p>
+   <p>還原上一次變更前自動留下的副本：</p>
+   <pre><code>ls -lt /opt/jt-proxense/config_backups/
+sudo cp /opt/jt-proxense/config_backups/config_YYYYMMDD_HHMMSS.yaml \
+        /opt/jt-proxense/config.yaml
+sudo chown jt-proxense:jt-proxense /opt/jt-proxense/config.yaml
+sudo chmod 600 /opt/jt-proxense/config.yaml
+sudo systemctl restart jt-proxense</code></pre>
+   <p>這一版不認識的設定欄位<strong>不算</strong>錯誤 —— 從 v1.1.1 起它會被忽略，並在記錄中具名警告，
+   周圍的設定都會保留。</p></div>
+            </details>
+            <details class="qa" id="systemd-path">
+                <summary>systemd: Failed to start／unit 因 ReadWritePaths 失敗</summary>
+                <div class="qa-a"><p>從 v1.1.0 起，unit 會逐一列出可寫入的路徑，而 systemd 會拒絕啟動
+   <code>ReadWritePaths</code> 指向不存在路徑的 unit。重跑安裝程式就會建立它們：</p>
+   <pre><code>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-proxense/main/install.sh | sudo bash</code></pre>
+   <p>那些路徑是 <code>/opt/jt-proxense/config.yaml</code>、
+   <code>/opt/jt-proxense/config_backups</code>、
+   <code>/opt/jt-proxense/.ssh</code>、<code>/var/lib/jt-proxense</code> 與
+   <code>/etc/jt-proxense</code>。會發生這個狀況，通常是 unit 被手動更新而不是透過
+   安裝程式。</p></div>
+            </details>
+            <details class="qa" id="port">
+                <summary>Address already in use／連接埠 8098 被占用</summary>
+                <div class="qa-a"><p>先找出是誰占住的，然後停掉它或改用別的連接埠：</p>
+   <pre><code>sudo ss -tlnp | grep 8098</code></pre>
+   <p>要改的話，編輯 <code>/opt/jt-proxense/config.yaml</code> 裡的
+   <code>server.http_port</code> 再重啟。全新安裝可以一開始就指定：</p>
+   <pre><code>curl -fsSL … | sudo JT_PROXENSE_PORT=8099 bash</code></pre></div>
+            </details>
+            <details class="qa" id="unstyled">
+                <summary>頁面載入了，但沒有樣式、版面整個擠成一直排</summary>
+                <div class="qa-a"><p>瀏覽器拿到了 JavaScript 卻沒拿到樣式表，通常是手動複製檔案之後，服務帳號讀不到
+   那些檔案：</p>
+   <pre><code>sudo chmod 644 /opt/jt-proxense/dist/index.html \
+                /opt/jt-proxense/dist/assets/index-*.js \
+                /opt/jt-proxense/dist/assets/index-*.css
+sudo systemctl restart jt-proxense</code></pre>
+   <p>重跑安裝程式也會修好，而且更安全。</p></div>
+            </details>
+            <details class="qa" id="cannot-save">
+                <summary>從介面新增叢集時存不起來</summary>
+                <div class="qa-a"><p>服務會寫入 <code>config.yaml</code> 並且先備份一份，所以兩者都必須是服務帳號可寫。
+   用 root shell 的重導向去改那個檔案會改變它的擁有者：</p>
+   <pre><code>sudo chown jt-proxense:jt-proxense /opt/jt-proxense/config.yaml
+sudo chmod 600 /opt/jt-proxense/config.yaml
+sudo chown -R jt-proxense:jt-proxense /opt/jt-proxense/config_backups
+sudo systemctl restart jt-proxense</code></pre></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-signin">
+                <h2>無法登入</h2>
+            <details class="qa" id="locked">
+                <summary>Too many attempts, please try again later</summary>
+                <div class="qa-a"><p>那個 IP 觸發了登入速率限制：五分鐘內失敗五次。冷卻時間過後會自己解除，或是立即解除：
+   </p>
+   <pre><code>sudo jt-proxense unlock            # 列出目前被鎖的
+sudo jt-proxense unlock --all      # 解除全部鎖定</code></pre>
+   <p>這只會清掉計數器，永遠不會更動任何密碼。</p></div>
+            </details>
+            <details class="qa" id="forgot">
+                <summary>忘記 admin 密碼，或是驗證器裝置遺失</summary>
+                <div class="qa-a"><p>CLI 在服務沒有執行的情況下也能用 —— 它存在的目的就是這個：</p>
+   <pre><code>sudo jt-proxense reset-password admin
+sudo jt-proxense user reset-totp admin</code></pre></div>
+            </details>
+            <details class="qa" id="shut-out">
+                <summary>驗證設定弄錯之後完全被關在外面</summary>
+                <div class="qa-a"><p>先把驗證關掉，修好設定，再打開：</p>
+   <pre><code>sudo jt-proxense auth disable       # 同時只綁定 127.0.0.1
+sudo systemctl restart jt-proxense</code></pre>
+   <p>之後用 <code>sudo jt-proxense auth set-local</code> 重新啟用。</p></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-after-110">
+                <h2>升級到 v1.1.0 之後</h2>
+            <details class="qa" id="xff">
+                <summary>所有人在幾次登入失敗後一起被鎖住</summary>
+                <div class="qa-a"><p>升級後最容易遇到的意外。<code>X-Forwarded-For</code> 現在只有來自 loopback 或你
+   明確指定的位址才會被採信。如果你的反向代理跑在<strong>另一台</strong>主機上，現在每個請求都帶著
+   代理的位址，所有使用者因此共用同一個速率限制計數 —— 任何人登入失敗五次，所有人一起被
+   鎖十五分鐘。稽核記錄也會把代理記成來源。</p>
+   <p>在 <code>/opt/jt-proxense/config.yaml</code> 裡指定你的代理：</p>
+   <pre><code>auth:
+  trusted_proxies:
+    - 192.0.2.10        # 也可以用 CIDR：192.0.2.0/24</code></pre>
+   <p>然後 <code>sudo systemctl restart jt-proxense</code> 並執行
+   <code>sudo jt-proxense unlock --all</code>。發生這個狀況時，記錄裡會對每個來源出現一次
+   <em>ignoring X-Forwarded-For from …</em>。</p></div>
+            </details>
+            <details class="qa" id="cors">
+                <summary>從其他來源提供的介面在升級後失效</summary>
+                <div class="qa-a"><p>從 v1.1.0 起，跨來源存取預設關閉。如果你的 SPA 與 API 在不同的主機或連接埠，
+   請指定該來源：</p>
+   <pre><code>server:
+  cors_origins:
+    - https://ui.example.net</code></pre>
+   <p>填 <code>*</code> 會被刻意忽略：萬用字元加上憑證，等於你瀏覽過的任何網站都能用你的
+   工作階段操作這個 API。</p>
+   <p>如果介面與 API 同源（預設就是如此，因為程式自己提供 SPA），你完全不需要設定這個。</p></div>
+            </details>
+            <details class="qa" id="ignored-setting">
+                <summary>記錄裡出現 ignoring unrecognised setting(s)</summary>
+                <div class="qa-a"><p>這是資訊性訊息。你的 <code>config.yaml</code> 裡有這一版不認識的欄位 —— 通常是打錯
+   字，或是來自其他版本的選項。該欄位會被忽略，其餘設定照常生效；請對照
+   <a href="https://github.com/jasoncheng7115/jt-proxense/blob/main/config.example.yaml">config.example.yaml</a>
+   檢查拼字。</p>
+   <p>在 v1.1.1 之前，這會讓服務起不來。如果你在 v1.1.0 而 daemon 因為某個關鍵字參數拒絕
+   啟動，請升級。</p></div>
+            </details>
+            <details class="qa" id="rbac">
+                <summary>先前被拒絕的「單一叢集角色」使用者，現在可以用了</summary>
+                <div class="qa-a"><p>這是預期行為。在 v1.1.0 之前，角色檢查只讀全域 (<code>*</code>) 授權，所以
+   <code>jt-proxense user grant bob cluster1 operator</code> 在入口處被忽略了。現在它在
+   該叢集底下的端點會生效。只授予單一叢集的角色，仍然不適用於使用者管理與全域設定。</p>
+   <p>檢視目前的授權：</p>
+   <pre><code>sudo jt-proxense user list</code></pre></div>
+            </details>
+            </section>
+            <section class="ts-sec" id="sec-stuck">
+                <h2>還是卡住</h2>
+            <details class="qa" id="report">
+                <summary>這裡沒有符合的狀況，要怎麼回報？</summary>
+                <div class="qa-a"><p>開一個 issue，附上足以重現問題的資訊：</p>
+   <pre><code>jt-proxense version
+cat /etc/os-release | head -2
+python3 -V
+sudo journalctl -u jt-proxense -n 100 --no-pager</code></pre>
+   <p>貼上之前請先遮蔽 PVE 主機名稱與 API token。<strong>絕對不要</strong>原封不動貼出
+   <code>config.yaml</code> —— 裡面有憑證。</p>
+   <p><a href="https://github.com/jasoncheng7115/jt-proxense/issues">到 GitHub 開 issue</a></p></div>
+            </details>
+            </section>
+            <p class="ts-empty" id="ts-empty">沒有符合的條目。試試看少打幾個字，或是 <a href="https://github.com/jasoncheng7115/jt-proxense/issues">開一個 issue</a>.</p>
+        </div>
+    </div>
+</main>
+
+<script>
+(function () {
+  var input   = document.getElementById('ts-q');
+  var clear   = document.getElementById('ts-clear');
+  var count   = document.getElementById('ts-count');
+  var empty   = document.getElementById('ts-empty');
+  var items   = Array.prototype.slice.call(document.querySelectorAll('.qa'));
+  var secs    = Array.prototype.slice.call(document.querySelectorAll('.ts-sec'));
+  var tocSecs = Array.prototype.slice.call(document.querySelectorAll('.ts-toc > ol > li'));
+  var ONE = '%d 條', MANY = '%d 條';
+
+  // Pre-compute the haystack once: question + answer text, lower-cased.
+  items.forEach(function (el) { el.dataset.hay = (el.textContent || '').toLowerCase(); });
+
+  function say(n) {
+    count.textContent = n === items.length ? '' : (n === 1 ? ONE : MANY).replace('%d', n);
+  }
+
+  function apply(q) {
+    q = q.trim().toLowerCase();
+    clear.style.display = q ? 'block' : 'none';
+    var shown = 0;
+    items.forEach(function (el) {
+      var hit = !q || el.dataset.hay.indexOf(q) !== -1;
+      el.hidden = !hit;
+      if (hit) { shown++; if (q) el.open = true; }
+      var t = document.querySelector('.ts-toc a[href="#' + el.id + '"]');
+      if (t) t.parentNode.classList.toggle('is-hidden', !hit);
+    });
+    // A section with nothing left in it should not leave a stray heading behind.
+    secs.forEach(function (s) {
+      s.hidden = !s.querySelector('.qa:not([hidden])');
+    });
+    tocSecs.forEach(function (li) {
+      li.classList.toggle('is-hidden', !li.querySelector('li:not(.is-hidden)'));
+    });
+    empty.style.display = shown ? 'none' : 'block';
+    say(shown);
+  }
+
+  input.addEventListener('input', function () { apply(input.value); });
+  clear.addEventListener('click', function () { input.value = ''; apply(''); input.focus(); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { input.value = ''; apply(''); }
+  });
+  // "/" focuses search, the way documentation sites do.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '/' && document.activeElement !== input) { e.preventDefault(); input.focus(); }
+  });
+
+  // Deep link: /troubleshooting.html#smoke opens that entry.
+  function openHash() {
+    var id = location.hash.slice(1);
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (el && el.classList.contains('qa')) { el.open = true; el.scrollIntoView(); }
+  }
+  window.addEventListener('hashchange', openHash);
+  openHash();
+
+  // Mark the entry currently in view in the contents list.
+  if ('IntersectionObserver' in window) {
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        var a = document.querySelector('.ts-toc a[href="#' + en.target.id + '"]');
+        if (a) a.classList.toggle('is-current', en.isIntersecting);
+      });
+    }, { rootMargin: '-80px 0px -70% 0px' });
+    items.forEach(function (el) { obs.observe(el); });
+  }
+})();
+</script>
+
+<footer class="foot">
+    <div class="container">
+        <nav class="foot-links">
+            <a href="index.zh-tw.html">回首頁</a>
+            <a href="https://github.com/jasoncheng7115/jt-proxense" target="_blank" rel="noopener">GitHub</a>
+            <a href="troubleshooting.html">English</a>
+        </nav>
+    </div>
+</footer>
+</body>
+</html>
