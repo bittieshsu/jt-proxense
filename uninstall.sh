@@ -19,6 +19,26 @@ INSTALL_DIR="${JT_PROXENSE_INSTALL_DIR:-/opt/jt-proxense}"
 SERVICE_USER="${JT_PROXENSE_USER:-jt-proxense}"
 SERVICE_NAME="jt-proxense"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+# ---------- where to send someone when this goes wrong ----------
+# Same locale rule as install.sh: a Chinese system gets the Chinese page,
+# everything else English. LC_ALL wins, then LC_MESSAGES, then LANG.
+DOCS_BASE="https://jasoncheng7115.github.io/jt-proxense"
+help_url() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+        zh_*|zh-*|zh|*[._]Hant*|*[._]Hans*)
+            printf '%s/troubleshooting.zh-tw.html' "$DOCS_BASE" ;;
+        *)  printf '%s/troubleshooting.html' "$DOCS_BASE" ;;
+    esac
+}
+help_line() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+        zh_*|zh-*|zh|*[._]Hant*|*[._]Hans*)
+            printf '  → 安裝與升級疑難排解：%s\n' "$(help_url)" >&2 ;;
+        *)  printf '  → Install & upgrade troubleshooting: %s\n' "$(help_url)" >&2 ;;
+    esac
+}
+die() { echo "ERROR: $*" >&2; help_line; exit 1; }
 STATE_DIR="/var/lib/jt-proxense"     # SQLite DB (users / audit / secrets rows)
 KEY_DIR="/etc/jt-proxense"           # master.key + secret store
 
@@ -30,8 +50,7 @@ for arg in "$@"; do
 done
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: run as root (sudo)." >&2
-    exit 1
+    die "run as root (sudo)."
 fi
 
 cat <<EOF
@@ -52,8 +71,7 @@ if [ "$ASSUME_YES" != "1" ]; then
         printf "Type 'remove' to proceed: " > /dev/tty
         read -r reply < /dev/tty
     else
-        echo "ERROR: no terminal for confirmation — re-run with --yes to force." >&2
-        exit 1
+        die "no terminal for confirmation — re-run with --yes to force."
     fi
     [ "$reply" = "remove" ] || { echo "aborted."; exit 1; }
 fi

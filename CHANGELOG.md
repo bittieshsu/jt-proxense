@@ -8,6 +8,19 @@ versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.3] — 2026-09-14
+
+### Added
+- **An Uninstall section on the troubleshooting page** (four entries): removing
+  it completely, removing it while keeping your settings and users, the two
+  messages the uninstaller can print, and clearing a partial removal by hand.
+- **`uninstall.sh` prints the troubleshooting URL when it fails**, in the same
+  language rule as the installer. Its two failure paths — not running as root,
+  and being piped with no terminal to confirm on — are as likely to be someone's
+  first contact with the project as anything in `install.sh`. Typing something
+  other than `remove` still exits quietly: that is the user aborting on purpose,
+  not a failure, and a support link there would be noise.
+
 ## [1.1.2] — 2026-09-14
 
 ### Added

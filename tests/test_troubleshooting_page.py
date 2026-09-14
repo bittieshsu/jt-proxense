@@ -53,6 +53,26 @@ def test_no_external_resources():
             assert "github.com" in m, f"{p.name}: external resource {m}"
 
 
+UNINSTALL = ROOT / "uninstall.sh" if (ROOT / "uninstall.sh").exists() else ROOT / "github" / "uninstall.sh"
+
+
+@pytest.mark.skipif(not UNINSTALL.exists(), reason="uninstall.sh not in this tree")
+def test_uninstaller_points_at_the_page_when_it_fails():
+    """Its two failure paths -- not root, and no TTY to confirm on -- are as
+    likely to be someone's first contact with the project as the installer's."""
+    t = UNINSTALL.read_text(encoding="utf-8")
+    assert "troubleshooting.html" in t and "troubleshooting.zh-tw.html" in t
+    die = next((l for l in t.splitlines() if l.startswith("die()")), "")
+    assert "help_line" in die, "uninstall.sh die() does not print the URL"
+    # Every bare `exit 1` should now be die(), with one deliberate exception:
+    # typing something other than "remove" is the user aborting on purpose, not
+    # a failure, and pointing them at a troubleshooting page would be noise.
+    bare = [l.strip() for l in t.splitlines()
+            if "exit 1" in l and not l.startswith("die()")]
+    assert bare == ['[ "$reply" = "remove" ] || { echo "aborted."; exit 1; }'], (
+        f"unexpected bare exit path(s): {bare}")
+
+
 @pytest.mark.skipif(not INSTALL.exists(), reason="install.sh not in this tree")
 def test_installer_points_at_the_page_when_it_fails():
     t = INSTALL.read_text(encoding="utf-8")
